@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- **Internet through Tavily.** `web_search` uses the Tavily API when
+  `TAVILY_API_KEY` is set, with an automatic DuckDuckGo fallback; `web_fetch`
+  tries Tavily Extract before a plain HTTP fetch. Configurable via the new
+  `search` section (`provider`, `max_results`, `depth`, `include_answer`).
+- **MCP client** (`jarvis/mcp.py`): stdio and HTTP/SSE transports, every tool of
+  every configured server exposed as `{server}_{tool}`.
+- **Long-term memory** (`jarvis/knowledge.py`): SQLite vector store with
+  `remember` / `recall` / `forget`, provider embeddings or an offline hashing
+  embedder, and automatic recall of relevant notes before each run.
+- **Reminders and scheduled tasks** (`jarvis/scheduler.py`): `remind_me`,
+  `schedule_task`, `list_jobs`, `cancel_job`; one-shot, interval and daily
+  schedules in English and Russian; executed by the daemon and persisted to
+  `~/.jarvis/jobs.json`.
+- **Vision** (`jarvis/vision.py`): `see_screen` and `look_at_image`.
+- **Execution sandbox** (`jarvis/sandbox.py`): `run_shell` and `run_python`
+  inside Docker or Firejail, network off and memory capped by default.
+- **Tray icon** (`jarvis/tray.py`) and **autostart** (`jarvis/autostart.py`) for
+  Windows, macOS and Linux via `jarvis --autostart install`.
+- **Interruptible runs**: `Agent.cancel()`, a streaming `Agent.stream()` and a
+  `stream()` interface on every backend; Ctrl+C stops a REPL run, not the
+  process.
+- **Provider router** (`jarvis/llm/router.py`): local model first, NVIDIA NIM
+  (new built-in `nim` provider) as fallback and for heavy requests.
+- **Sub-agent delegation**: the `delegate` tool runs a subtask in a fresh
+  context, optionally on another provider, capped at two levels.
+- **Dry-run mode**: `jarvis --dry-run` returns the plan and executes nothing.
+- **Telegram bot** (`jarvis/telegram_bot.py`): long polling, per-chat context,
+  `/reset`, strict user whitelist, confirmations refused by default.
+- Tests for the router, search, knowledge base, scheduler, sandbox, Telegram,
+  tray and autostart.
+
+### Changed
+
+- `build_default_registry` accepts `backend_factory`, `agent_factory` and
+  `depth`, and exposes the shared subsystems on the registry.
+- Every optional subsystem degrades with a warning instead of blocking startup.
+- README, `config.example.yaml` and `.env.example` rewritten; new feature guide
+  in `docs/v0.3-autonomy.md`.
+
+### Fixed
+
+- Quitting from the tray no longer re-enters the shutdown path.
+- Telegram configuration is validated before the polling thread starts, so a
+  missing token or whitelist is reported instead of dying silently in a thread.
+- A failing MCP server or vision dependency can no longer prevent Jarvis from
+  starting.
+- Recalled notes are folded into the user turn instead of accumulating extra
+  system messages in the conversation history.
+
 ## 0.2.0
 
 ### Added
