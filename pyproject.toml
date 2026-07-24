@@ -1,32 +1,43 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-desktop"
-version = "0.1.0"
-description = "An extensible desktop AI assistant with pluggable LLM backends and tools."
+version = "0.2.0"
+description = "An extensible desktop AI assistant with tools, skills, voice and a global hotkey"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
+    "requests>=2.31",
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
-    "requests>=2.31",
     "rich>=13.0",
 ]
 
 [project.optional-dependencies]
 openai = ["openai>=1.30"]
-anthropic = ["anthropic>=0.34"]
-web = ["duckduckgo-search>=6.0", "beautifulsoup4>=4.12"]
-desktop = ["pyautogui>=0.9.54"]
+anthropic = ["anthropic>=0.30"]
+web = ["beautifulsoup4>=4.12", "duckduckgo-search>=6.0"]
+desktop = ["pyautogui>=0.9.54", "pyperclip>=1.8", "psutil>=5.9"]
+hotkey = ["pynput>=1.7"]
+voice = ["faster-whisper>=1.0", "sounddevice>=0.4", "pyttsx3>=2.90"]
+notify = ["plyer>=2.1"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
 all = [
     "openai>=1.30",
-    "anthropic>=0.34",
-    "duckduckgo-search>=6.0",
+    "anthropic>=0.30",
     "beautifulsoup4>=4.12",
+    "duckduckgo-search>=6.0",
     "pyautogui>=0.9.54",
+    "pyperclip>=1.8",
+    "psutil>=5.9",
+    "pynput>=1.7",
+    "faster-whisper>=1.0",
+    "sounddevice>=0.4",
+    "pyttsx3>=2.90",
+    "plyer>=2.1",
 ]
 
 [project.scripts]
@@ -34,3 +45,14 @@ jarvis = "jarvis.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["jarvis*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
