@@ -9,20 +9,25 @@ from .config import Config
 from .llm import LLMBackend, build_backend
 from .llm.base import ToolCall
 from .memory import ConversationMemory
+from .security import SecurityError
 from .tools import ToolRegistry, build_default_registry
 
 DEFAULT_SYSTEM_PROMPT = """You are Jarvis, a capable desktop AI assistant.
 
 You help the user accomplish real tasks on their computer. You can search the
-web, read and write files, run shell commands and Python, open applications and
-URLs, and control the keyboard/mouse when needed.
+web, read and write files, create and delete folders, write and run code, run
+shell commands, install or remove applications, call external HTTP APIs, open
+programs and URLs, and control the keyboard/mouse when needed.
 
 Guidelines:
 - Think step by step and use tools to gather information instead of guessing.
 - Prefer the least intrusive action that accomplishes the goal.
 - When a task needs several steps, do them one at a time and check the results.
+- After writing code, run it or its tests to verify it actually works.
 - Be concise. Report what you did and the outcome.
 - If an action could be destructive or irreversible, explain it clearly first.
+- If a tool refuses an action for security reasons, explain why instead of
+  trying to work around the restriction.
 """
 
 # Hook type: (tool_name, arguments) -> approved?
@@ -35,7 +40,7 @@ EventHook = Callable[[str], None]
 class AgentEvent:
     """Emitted as the agent works, for UIs that want to show progress."""
 
-    kind: str  # "tool_call" | "tool_result" | "final"
+    kind: str  # "tool_call" | "tool_result" | "final" | "error"
     text: str
 
 
@@ -49,6 +54,7 @@ class Agent:
         require_confirmation: bool = True,
         confirm_hook: ConfirmHook | None = None,
         on_event: EventHook | None = None,
+        memory: ConversationMemory | None = None,
     ):
         self.backend = backend
         self.tools = tools
@@ -56,7 +62,7 @@ class Agent:
         self.require_confirmation = require_confirmation
         self.confirm_hook = confirm_hook
         self.on_event = on_event
-        self.memory = ConversationMemory(system_prompt)
+        self.memory = memory or ConversationMemory(system_prompt)
 
     # ------------------------------------------------------------------
     @classmethod
@@ -68,9 +74,17 @@ class Agent:
     ) -> "Agent":
         backend = build_backend(config)
         tools = build_default_registry(config)
+
         system_prompt = DEFAULT_SYSTEM_PROMPT
         if config.persona:
             system_prompt = f"{system_prompt}\n\nPersona:\n{config.persona.strip()}"
+
+        memory = ConversationMemory(
+            system_prompt,
+            max_messages=config.memory.max_messages,
+            max_chars=config.memory.max_chars,
+            path=config.memory.path if config.memory.persist else None,
+        )
         return cls(
             backend=backend,
             tools=tools,
@@ -79,6 +93,7 @@ class Agent:
             require_confirmation=config.require_confirmation,
             confirm_hook=confirm_hook,
             on_event=on_event,
+            memory=memory,
         )
 
     # ------------------------------------------------------------------
@@ -98,7 +113,10 @@ class Agent:
             approved = self.confirm_hook(call.name, call.arguments)  # type: ignore[misc]
             if not approved:
                 return "The user declined to run this action."
-        result = self.tools.execute(call.name, call.arguments)
+        try:
+            result = self.tools.execute(call.name, call.arguments)
+        except SecurityError as exc:
+            result = f"Refused by security policy: {exc}"
         self._emit("tool_result", result[:500])
         return result
 
