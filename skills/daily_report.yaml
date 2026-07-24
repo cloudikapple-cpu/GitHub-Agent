@@ -1,0 +1,10 @@
+# Example YAML skill: a reusable instruction the model can invoke by name.
+# Ask Jarvis "run daily_report" and it will follow these steps with its tools.
+name: daily_report
+description: Collect today's notes into a short report and save it to disk.
+prompt: |
+  1. Read ~/notes/today.md (if it does not exist, say so and stop).
+  2. Summarise it into at most five bullet points.
+  3. Create the folder ~/reports if needed.
+  4. Save the summary to ~/reports/daily-report.md with today's date as the title.
+  5. Reply with the bullets only.
