@@ -33,7 +33,12 @@ def _icon_image(size: int = 64):
 
 
 class TrayIcon:
-    """Thin wrapper around :mod:`pystray`."""
+    """Thin wrapper around :mod:`pystray`.
+
+    ``stop()`` only removes the icon — it never quits the application, so the
+    daemon can call it during its own shutdown. Quitting from the menu goes
+    through :meth:`quit`, which removes the icon *and* calls ``on_quit``.
+    """
 
     def __init__(
         self,
@@ -63,15 +68,31 @@ class TrayIcon:
             pystray.MenuItem("Ask Jarvis", lambda: self.on_open(), default=True),
             pystray.MenuItem("Voice command", lambda: self.on_voice()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit", lambda: self.stop()),
+            pystray.MenuItem("Quit", lambda: self.quit()),
         )
-        self._icon = pystray.Icon("jarvis", _icon_image(), title, menu)
-        self._icon.run_detached()
+        try:
+            self._icon = pystray.Icon("jarvis", _icon_image(), title, menu)
+            self._icon.run_detached()
+        except Exception as exc:  # noqa: BLE001 - a missing tray must not be fatal
+            LOGGER.warning("Tray icon could not start: %s", exc)
+            self._icon = None
+            return False
         return True
 
     def stop(self) -> None:
-        if self._icon is not None:
-            self._icon.visible = False
-            self._icon.stop()
-            self._icon = None
+        """Remove the icon. Safe to call twice and when it never started."""
+
+        icon, self._icon = self._icon, None
+        if icon is None:
+            return
+        try:
+            icon.visible = False
+            icon.stop()
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("Tray icon shutdown failed: %s", exc)
+
+    def quit(self) -> None:
+        """Menu action: close the icon and ask the application to exit."""
+
+        self.stop()
         self.on_quit()

@@ -5,6 +5,10 @@ security policy described by the config, adds the optional subsystems
 (long-term memory, scheduler, vision, delegation, MCP servers), then loads the
 user's own skills.
 
+Every optional subsystem degrades gracefully: a missing dependency, an
+unreachable MCP server or a broken database disables that group of tools with a
+warning instead of preventing Jarvis from starting.
+
 The shared subsystem objects are attached to the registry so the daemon can
 reuse them::
 
@@ -73,13 +77,11 @@ def build_default_registry(
     policy = config.policy()
     sandbox = Sandbox(config.execution_sandbox)
     registry = ToolRegistry()
-    registry.knowledge = None  # type: ignore[attr-defined]
-    registry.scheduler = None  # type: ignore[attr-defined]
-    registry.sandbox = sandbox  # type: ignore[attr-defined]
+    registry.knowledge = None
+    registry.scheduler = None
+    registry.sandbox = sandbox
 
-    for tool in _tag(
-        [WebSearchTool(config.search), WebFetchTool(config.search)], "web"
-    ):
+    for tool in _tag([WebSearchTool(config.search), WebFetchTool(config.search)], "web"):
         registry.register(tool)
 
     for tool in _tag(
@@ -119,9 +121,7 @@ def build_default_registry(
     ):
         registry.register(tool)
 
-    for tool in _tag(
-        [OpenPathTool(), ScreenshotTool(), TypeTextTool(), HotkeyTool()], "desktop"
-    ):
+    for tool in _tag([OpenPathTool(), ScreenshotTool(), TypeTextTool(), HotkeyTool()], "desktop"):
         registry.register(tool)
 
     for tool in _tag(
@@ -146,7 +146,7 @@ def build_default_registry(
                 embedder=build_embedder(config),
                 top_k=config.knowledge.top_k,
             )
-            registry.knowledge = knowledge  # type: ignore[attr-defined]
+            registry.knowledge = knowledge
             for tool in build_knowledge_tools(knowledge):
                 registry.register(tool)
         except Exception as exc:  # noqa: BLE001 - memory is optional
@@ -161,21 +161,27 @@ def build_default_registry(
             scheduler = Scheduler(
                 path=config.scheduler.path, tick_seconds=config.scheduler.tick_seconds
             )
-            registry.scheduler = scheduler  # type: ignore[attr-defined]
+            registry.scheduler = scheduler
             for tool in build_scheduler_tools(scheduler):
                 registry.register(tool)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("Scheduler disabled: %s", exc)
 
     # -- vision --------------------------------------------------------
-    if config.vision.enabled and backend_factory is not None:
-        from .vision_tools import build_vision_tools
+    if config.vision.enabled:
+        if backend_factory is None:
+            LOGGER.warning("Vision is enabled but no model factory was provided.")
+        else:
+            try:
+                from .vision_tools import build_vision_tools
 
-        provider = config.vision.provider or config.router.vision or None
-        for tool in build_vision_tools(
-            lambda: backend_factory(provider), config.vision.max_width
-        ):
-            registry.register(tool)
+                provider = config.vision.provider or config.router.vision or None
+                for tool in build_vision_tools(
+                    lambda: backend_factory(provider), config.vision.max_width
+                ):
+                    registry.register(tool)
+            except Exception as exc:  # noqa: BLE001 - vision needs Pillow
+                LOGGER.warning("Vision tools disabled: %s", exc)
 
     # -- sub-agents ----------------------------------------------------
     if agent_factory is not None:
@@ -185,10 +191,13 @@ def build_default_registry(
 
     # -- MCP servers ---------------------------------------------------
     if config.mcp_servers:
-        from ..mcp import load_mcp_tools
+        try:
+            from ..mcp import load_mcp_tools
 
-        for tool in load_mcp_tools(config):
-            registry.register(tool)
+            for tool in load_mcp_tools(config):
+                registry.register(tool)
+        except Exception as exc:  # noqa: BLE001 - a broken server must not block startup
+            LOGGER.warning("MCP tools unavailable: %s", exc)
 
     # User skills last, so they can override a built-in tool by name.
     from ..skills import load_skills

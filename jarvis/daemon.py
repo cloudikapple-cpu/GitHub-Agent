@@ -11,6 +11,7 @@ Run it with ``jarvis --daemon``. It stays resident and reacts to:
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 
@@ -18,6 +19,8 @@ from .agent import Agent
 from .config import Config
 from .hotkey import HotkeyManager
 from .notifications import notify
+
+LOGGER = logging.getLogger(__name__)
 
 
 def run_daemon(config: Config | None = None) -> int:
@@ -71,12 +74,17 @@ def run_daemon(config: Config | None = None) -> int:
         hint = f"Hotkeys unavailable ({exc})"
 
     # -- reminders and scheduled tasks ---------------------------------
-    scheduler = getattr(agent, "scheduler", None)
+    scheduler = agent.scheduler
 
     def handle_job(job) -> None:
         if job.kind == "task":
+
             def worker() -> None:
-                reply = agent.run(job.text)
+                try:
+                    reply = agent.run(job.text)
+                except Exception as exc:  # noqa: BLE001 - a bad job must not kill the loop
+                    LOGGER.exception("Scheduled task failed")
+                    reply = f"Scheduled task failed: {exc}"
                 window.push_event("assistant", reply)
                 if config.interface.notify:
                     notify("Jarvis — scheduled task", reply[:200])
@@ -117,12 +125,15 @@ def run_daemon(config: Config | None = None) -> int:
         def telegram_agent(confirm_hook):
             return Agent.from_config(config, confirm_hook=confirm_hook, persist_memory=False)
 
-        bot = TelegramBot(config, telegram_agent)
+        candidate = TelegramBot(config, telegram_agent)
         try:
-            threading.Thread(target=bot.run, name="jarvis-telegram", daemon=True).start()
-            hint += ", telegram on"
+            candidate.validate()
         except ValueError as exc:
             hint += f", telegram off ({exc})"
+        else:
+            bot = candidate
+            threading.Thread(target=bot.run, name="jarvis-telegram", daemon=True).start()
+            hint += ", telegram on"
 
     print(hint)
     if config.interface.notify:
@@ -137,6 +148,6 @@ def run_daemon(config: Config | None = None) -> int:
             scheduler.stop()
         if bot is not None:
             bot.stop()
-        if tray is not None and tray.available():
+        if tray is not None:
             tray.stop()
     return 0

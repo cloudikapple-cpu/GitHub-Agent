@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -39,6 +40,13 @@ DRY RUN MODE: do not call any tools. Instead, reply with the numbered plan of
 actions you would take, naming the exact tool and arguments for each step, and
 flag anything destructive.
 """
+
+MAX_ITERATIONS_MESSAGE = "Stopped after reaching the maximum number of tool iterations."
+CANCELLED_MESSAGE = "Stopped at your request."
+#: Long-term notes below this similarity are noise and are not injected.
+RECALL_THRESHOLD = 0.15
+#: Sub-agents may not delegate deeper than this.
+MAX_DELEGATION_DEPTH = 2
 
 # Hook type: (tool_name, arguments) -> approved?
 ConfirmHook = Callable[[str, dict[str, Any]], bool]
@@ -79,6 +87,9 @@ class Agent:
         self.on_event = on_event
         self.memory = memory or ConversationMemory(system_prompt)
         self.dry_run = dry_run
+        #: Shared subsystems, populated by :meth:`from_config` when enabled.
+        self.knowledge = getattr(tools, "knowledge", None)
+        self.scheduler = getattr(tools, "scheduler", None)
         #: Set by :meth:`cancel` to stop a run between steps.
         self.cancel_event = threading.Event()
 
@@ -113,7 +124,7 @@ class Agent:
         tools = build_default_registry(
             config,
             backend_factory=backend_factory,
-            agent_factory=agent_factory if depth < 2 else None,
+            agent_factory=agent_factory if depth < MAX_DELEGATION_DEPTH else None,
             depth=depth,
         )
 
@@ -129,7 +140,7 @@ class Agent:
             max_chars=config.memory.max_chars,
             path=config.memory.path if (config.memory.persist and persist_memory) else None,
         )
-        agent = cls(
+        return cls(
             backend=backend,
             tools=tools,
             system_prompt=system_prompt,
@@ -140,9 +151,6 @@ class Agent:
             memory=memory,
             dry_run=config.dry_run,
         )
-        agent.knowledge = getattr(tools, "knowledge", None)
-        agent.scheduler = getattr(tools, "scheduler", None)
-        return agent
 
     # ------------------------------------------------------------------
     def cancel(self) -> None:
@@ -183,11 +191,14 @@ class Agent:
     def _recall_context(self, user_message: str) -> str:
         """Pull relevant long-term notes for this message."""
 
-        knowledge = getattr(self, "knowledge", None)
-        if knowledge is None:
+        if self.knowledge is None:
             return ""
         try:
-            notes = [note for note in knowledge.search(user_message) if note.score > 0.15]
+            notes = [
+                note
+                for note in self.knowledge.search(user_message)
+                if note.score > RECALL_THRESHOLD
+            ]
         except Exception:  # noqa: BLE001 - memory must never break a run
             return ""
         if not notes:
@@ -195,17 +206,25 @@ class Agent:
         joined = "\n".join(f"- {note.text}" for note in notes)
         return f"Relevant notes from long-term memory:\n{joined}"
 
+    def _prepare(self, user_message: str) -> list[dict[str, Any]] | None:
+        """Record the user turn (with recalled context) and return tool schemas."""
+
+        self.cancel_event.clear()
+        context = self._recall_context(user_message)
+        content = f"{context}\n\n{user_message}" if context else user_message
+        self.memory.add({"role": "user", "content": content})
+        return None if self.dry_run else self.tools.schemas()
+
+    def _finish(self, text: str) -> str:
+        self.memory.add({"role": "assistant", "content": text})
+        self._emit("final", text)
+        return text
+
     # ------------------------------------------------------------------
     def run(self, user_message: str) -> str:
         """Process a single user message and return the assistant's final reply."""
 
-        self.cancel_event.clear()
-
-        context = self._recall_context(user_message)
-        if context:
-            self.memory.add({"role": "system", "content": context})
-        self.memory.add({"role": "user", "content": user_message})
-        tool_schemas = None if self.dry_run else self.tools.schemas()
+        tool_schemas = self._prepare(user_message)
 
         try:
             for _ in range(self.max_iterations):
@@ -213,10 +232,7 @@ class Agent:
                 response = self.backend.chat(self.memory.messages(), tools=tool_schemas)
 
                 if not response.wants_tools:
-                    final = response.content or ""
-                    self.memory.add({"role": "assistant", "content": final})
-                    self._emit("final", final)
-                    return final
+                    return self._finish(response.content or "")
 
                 # Record the assistant's tool-call turn, then execute each call.
                 self.memory.add(
@@ -238,11 +254,28 @@ class Agent:
                         }
                     )
         except Cancelled:
-            message = "Stopped at your request."
-            self.memory.add({"role": "assistant", "content": message})
-            self._emit("final", message)
-            return message
+            return self._finish(CANCELLED_MESSAGE)
 
-        message = "Stopped after reaching the maximum number of tool iterations."
-        self.memory.add({"role": "assistant", "content": message})
-        return message
+        return self._finish(MAX_ITERATIONS_MESSAGE)
+
+    # ------------------------------------------------------------------
+    def stream(self, user_message: str) -> Iterator[str]:
+        """Yield the reply as it is produced.
+
+        Tool-using turns cannot be streamed meaningfully — the tokens are a
+        function call, not prose — so the loop streams the answer only while no
+        tool has been requested, and falls back to :meth:`run` as soon as the
+        model reaches for a tool. Cancellation works between chunks.
+        """
+
+        tool_schemas = self._prepare(user_message)
+        chunks: list[str] = []
+        try:
+            for chunk in self.backend.stream(self.memory.messages(), tools=tool_schemas):
+                self._check_cancelled()
+                chunks.append(chunk)
+                yield chunk
+        except Cancelled:
+            yield self._finish(CANCELLED_MESSAGE)
+            return
+        self._finish("".join(chunks))
