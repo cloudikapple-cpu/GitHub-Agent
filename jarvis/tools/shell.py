@@ -1,9 +1,11 @@
 """Run shell commands and Python snippets on the local machine.
 
-Both tools are gated twice:
+Both tools are gated three times:
 
-1. the :class:`~jarvis.security.SecurityPolicy` (kill switch + deny-list), and
-2. interactive confirmation (``requires_confirmation``).
+1. the :class:`~jarvis.security.SecurityPolicy` (kill switch + deny-list),
+2. interactive confirmation (``requires_confirmation``), and
+3. optional isolation — with ``execution_sandbox.mode`` set to ``docker`` or
+   ``firejail`` the command never touches the host directly.
 
 ``JARVIS_ALLOW_SHELL=false`` disables the shell, ``JARVIS_ALLOW_EXEC=false``
 disables Python execution as well — the two are separate on purpose, since
@@ -16,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..sandbox import Sandbox, SandboxUnavailable
 from ..security import SecurityError, SecurityPolicy
 from .base import Tool
 
@@ -56,11 +59,17 @@ class ShellTool(Tool):
         "required": ["command"],
     }
 
-    def __init__(self, allow: bool = True, policy: SecurityPolicy | None = None):
+    def __init__(
+        self,
+        allow: bool = True,
+        policy: SecurityPolicy | None = None,
+        sandbox: Sandbox | None = None,
+    ):
         # The policy may be shared with other tools, so an explicit allow=False
         # is kept locally instead of mutating it.
         self.policy = policy or SecurityPolicy()
         self.allow = bool(allow) and self.policy.allow_shell
+        self.sandbox = sandbox
 
     def run(self, command: str, cwd: str | None = None, timeout: int = 60) -> str:
         if not self.allow:
@@ -72,6 +81,13 @@ class ShellTool(Tool):
             return f"Refused: {exc}"
         if workdir and not Path(workdir).is_dir():
             return f"Error: working directory '{cwd}' does not exist."
+
+        if self.sandbox is not None and self.sandbox.enabled:
+            try:
+                return self.sandbox.run(command, cwd=workdir, timeout=timeout).format()
+            except SandboxUnavailable as exc:
+                return f"Error: {exc}"
+
         try:
             proc = subprocess.run(
                 command,
@@ -109,8 +125,9 @@ class PythonExecTool(Tool):
         "required": ["code"],
     }
 
-    def __init__(self, policy: SecurityPolicy | None = None):
+    def __init__(self, policy: SecurityPolicy | None = None, sandbox: Sandbox | None = None):
         self.policy = policy or SecurityPolicy()
+        self.sandbox = sandbox
 
     def run(self, code: str, cwd: str | None = None, timeout: int = 60) -> str:
         try:
@@ -119,6 +136,19 @@ class PythonExecTool(Tool):
         except SecurityError as exc:
             return f"Refused: {exc}"
         self.policy.audit("python", code)
+
+        if self.sandbox is not None and self.sandbox.enabled:
+            try:
+                target = self.sandbox.workdir() / "_snippet.py"
+                target.write_text(code, encoding="utf-8")
+                return self.sandbox.run(
+                    f"python {target.name}", cwd=str(target.parent), timeout=timeout
+                ).format()
+            except SandboxUnavailable as exc:
+                return f"Error: {exc}"
+            except OSError as exc:
+                return f"Error writing the snippet: {exc}"
+
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", code],
