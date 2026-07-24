@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-desktop"
-version = "0.2.0"
-description = "An extensible desktop AI assistant with tools, skills, voice and a global hotkey"
+version = "0.3.0"
+description = "An extensible desktop AI assistant with tools, skills, MCP, memory, reminders, voice and a global hotkey"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -20,10 +20,11 @@ dependencies = [
 openai = ["openai>=1.30"]
 anthropic = ["anthropic>=0.30"]
 web = ["beautifulsoup4>=4.12", "duckduckgo-search>=6.0"]
-desktop = ["pyautogui>=0.9.54", "pyperclip>=1.8", "psutil>=5.9"]
+desktop = ["pyautogui>=0.9.54", "pyperclip>=1.8", "psutil>=5.9", "Pillow>=10.0"]
 hotkey = ["pynput>=1.7"]
 voice = ["faster-whisper>=1.0", "sounddevice>=0.4", "pyttsx3>=2.90"]
 notify = ["plyer>=2.1"]
+tray = ["pystray>=0.19", "Pillow>=10.0"]
 dev = ["pytest>=8.0", "ruff>=0.5"]
 all = [
     "openai>=1.30",
@@ -33,11 +34,13 @@ all = [
     "pyautogui>=0.9.54",
     "pyperclip>=1.8",
     "psutil>=5.9",
+    "Pillow>=10.0",
     "pynput>=1.7",
     "faster-whisper>=1.0",
     "sounddevice>=0.4",
     "pyttsx3>=2.90",
     "plyer>=2.1",
+    "pystray>=0.19",
 ]
 
 [project.scripts]

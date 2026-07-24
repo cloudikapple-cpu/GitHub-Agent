@@ -1,7 +1,8 @@
-# Copy to config.yaml and edit. Every value is optional.
-# ${VAR} references are read from the environment / .env file.
+# Jarvis configuration example. Copy to config.yaml and edit.
+# ${VAR} is replaced with the environment variable of that name, so secrets
+# can stay in .env while this file goes into version control.
 
-# Which provider from the `providers` block to use.
+# Which provider to use when the router is off.
 backend: openai
 
 providers:
@@ -10,51 +11,112 @@ providers:
     model: gpt-4o-mini
     api_key: ${OPENAI_API_KEY}
 
-  anthropic:
-    kind: anthropic
-    model: claude-3-5-sonnet-latest
-    api_key: ${ANTHROPIC_API_KEY}
+  # Any OpenAI-compatible endpoint works the same way.
+  openrouter:
+    kind: openai
+    model: deepseek/deepseek-chat
+    api_key: ${OPENROUTER_API_KEY}
+    base_url: https://openrouter.ai/api/v1
+    headers:
+      HTTP-Referer: https://localhost
 
+  # NVIDIA NIM — cloud rescue for the local model.
+  nim:
+    kind: openai
+    model: meta/llama-3.3-70b-instruct
+    api_key: ${NVIDIA_API_KEY}
+    base_url: https://integrate.api.nvidia.com/v1
+
+  # Local model: free, private, offline.
   ollama:
     kind: ollama
     model: llama3.1
     base_url: http://localhost:11434
 
-  # Any OpenAI-compatible API: OpenRouter, Groq, Together, DeepSeek,
-  # LM Studio, vLLM, llama.cpp, a corporate gateway...
-  openrouter:
+  # Local OpenAI-compatible server (LM Studio, vLLM, llama.cpp).
+  local:
     kind: openai
-    model: deepseek/deepseek-chat
-    base_url: https://openrouter.ai/api/v1
-    api_key: ${OPENROUTER_API_KEY}
-    headers:
-      HTTP-Referer: https://example.com
-      X-Title: Jarvis
-    temperature: 0.3
-    max_tokens: 4096
-
-  lmstudio:
-    kind: openai
-    model: local-model
+    model: qwen2.5-7b-instruct
     base_url: http://localhost:1234/v1
 
+# Local model first, NVIDIA NIM when it fails or the task is heavy.
+router:
+  enabled: false
+  primary: ollama
+  fallbacks: [nim]
+  heavy: nim
+  escalate_over_chars: 4000
+
 behaviour:
-  require_confirmation: true    # ask before risky actions
-  max_iterations: 12            # tool calls per request
-  persona: ""                   # extra system instructions
+  require_confirmation: true
+  max_iterations: 12
+  dry_run: false
+  persona: ""
 
 security:
   allow_shell: true
-  allow_exec: true              # run_python
-  allow_desktop: true           # keyboard/mouse/screenshots
-  allow_app_management: false   # install/uninstall software
+  allow_exec: true
+  allow_desktop: true
+  allow_app_management: false
   allow_network: true
-  # Empty = the whole filesystem. Restrict it if you want a sandbox.
+  # Empty means the whole filesystem minus the deny-list below.
   allowed_roots: []
-  # allowed_roots:
-  #   - ~/projects
-  #   - ~/Documents
   audit_log: ~/.jarvis/audit.log
+
+# Run shell commands and generated code inside a container instead of the host.
+execution_sandbox:
+  mode: none          # none | docker | firejail
+  image: python:3.12-slim
+  network: false
+  workdir: ~/.jarvis/sandbox
+  timeout: 120
+  memory_limit: 1g
+
+# Internet access. Tavily is used when a key is set, DuckDuckGo otherwise.
+search:
+  provider: auto      # auto | tavily | duckduckgo
+  tavily_api_key: ${TAVILY_API_KEY}
+  max_results: 5
+  depth: basic        # basic | advanced
+  include_answer: true
+
+# Durable notes recalled by meaning across sessions.
+knowledge:
+  enabled: true
+  path: ~/.jarvis/knowledge.db
+  # Leave empty for the offline hashing embedder.
+  embedding_provider: ""
+  embedding_model: text-embedding-3-small
+  top_k: 5
+
+# Reminders and unattended tasks (the daemon runs them).
+scheduler:
+  enabled: true
+  path: ~/.jarvis/jobs.json
+  tick_seconds: 20
+
+# Let the assistant look at the screen (needs a vision-capable model).
+vision:
+  enabled: false
+  provider: openai
+  max_width: 1280
+
+voice:
+  enabled: false
+  stt: whisper        # whisper | google | vosk
+  whisper_model: base
+  language: ru
+  tts: pyttsx3        # pyttsx3 | none
+  speak_replies: true
+  record_seconds: 8
+
+interface:
+  hotkey: ctrl+alt+space
+  voice_hotkey: ctrl+alt+v
+  overlay: true
+  notify: true
+  tray: true
+  stream: true
 
 memory:
   persist: true
@@ -62,33 +124,35 @@ memory:
   max_messages: 60
   max_chars: 24000
 
-interface:
-  hotkey: ctrl+alt+space        # open the window
-  voice_hotkey: ctrl+alt+v      # open it and start listening
-  overlay: true
-  notify: true
-
-voice:
+# Control Jarvis from your phone. Never leave allowed_user_ids empty.
+telegram:
   enabled: false
-  stt: whisper                  # whisper | google | vosk
-  whisper_model: base
-  language: ru
-  tts: pyttsx3                  # pyttsx3 | none
-  speak_replies: true
-  record_seconds: 8
+  token: ${TELEGRAM_BOT_TOKEN}
+  allowed_user_ids: []
+  allow_confirmations: false
+
+# Any MCP server becomes a set of tools.
+mcp_servers:
+  github:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+    enabled: false
+  remote:
+    url: https://example.com/mcp
+    headers:
+      Authorization: Bearer ${REMOTE_MCP_TOKEN}
+    enabled: false
 
 skills_dirs:
   - ~/.jarvis/skills
   - ./skills
 
-# Named REST services exposed through the http_request tool.
+# Named REST services: the model calls them by name and never sees the token.
 integrations:
-  # notion:
-  #   base_url: https://api.notion.com/v1
-  #   headers:
-  #     Authorization: Bearer ${NOTION_TOKEN}
-  #     Notion-Version: "2022-06-28"
-  # home_assistant:
-  #   base_url: http://homeassistant.local:8123/api
-  #   headers:
-  #     Authorization: Bearer ${HASS_TOKEN}
+  notion:
+    base_url: https://api.notion.com/v1
+    headers:
+      Authorization: Bearer ${NOTION_TOKEN}
+      Notion-Version: "2022-06-28"

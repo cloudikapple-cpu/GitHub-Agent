@@ -15,7 +15,7 @@ from typing import Any, Callable
 import requests
 
 LOGGER = logging.getLogger(__name__)
-API_TEMPLATE = "https://api.telegram.org/bot{token}/{method}"
+API_ROOT = "https://api.telegram.org"
 
 
 class TelegramBot:
@@ -28,12 +28,11 @@ class TelegramBot:
         self._stop = False
 
     # ------------------------------------------------------------------
+    def endpoint(self, method: str) -> str:
+        return f"{API_ROOT}/bot{self.config.token}/{method}"
+
     def _call(self, method: str, **payload: Any) -> dict[str, Any]:
-        response = requests.post(
-            API_TEMPLATE.format(token=self.config.token, method=method),
-            json=payload,
-            timeout=70,
-        )
+        response = requests.post(self.endpoint(method), json=payload, timeout=70)
         response.raise_for_status()
         return response.json()
 
