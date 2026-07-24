@@ -22,7 +22,7 @@ function or a module-level ``TOOLS`` list::
     description: Build the daily report from my notes.
     prompt: |
       Read ~/notes/today.md, summarise it in five bullets and save the result
-      to ~/reports/{date}.md.
+      to ~/reports/report.md.
 
 Skills are ordinary Python, so a malicious file can do anything your user
 account can. Only install skills you trust.
@@ -54,13 +54,13 @@ def _load_python_skill(path: Path, registry: ToolRegistry, config: Any) -> list[
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
-    before = set(tool.name for tool in registry)
+    before = {tool.name for tool in registry}
     if hasattr(module, "register"):
         module.register(registry, config)
     for tool in getattr(module, "TOOLS", []) or []:
         if isinstance(tool, Tool):
             registry.register(tool)
-    return sorted(set(tool.name for tool in registry) - before)
+    return sorted({tool.name for tool in registry} - before)
 
 
 def _load_yaml_skill(path: Path, registry: ToolRegistry) -> list[str]:
@@ -82,8 +82,9 @@ def _load_yaml_skill(path: Path, registry: ToolRegistry) -> list[str]:
     def _run(**kwargs: Any) -> str:
         extra = kwargs.get("input") or ""
         try:
+            # Templates may use {placeholders}; literal braces are left as-is.
             body = prompt.format(**kwargs)
-        except (KeyError, IndexError):
+        except (KeyError, IndexError, ValueError):
             body = prompt
         return (
             f"Skill '{name}' instructions — follow them now using your tools:\n{body}"

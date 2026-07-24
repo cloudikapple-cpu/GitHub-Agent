@@ -21,6 +21,10 @@ from .base import Tool
 
 _MAX_OUTPUT = 20_000
 
+SHELL_DISABLED_MESSAGE = (
+    "Shell execution is disabled (set JARVIS_ALLOW_SHELL=true to enable)."
+)
+
 
 def _format(proc: subprocess.CompletedProcess[str]) -> str:
     parts = [f"exit code: {proc.returncode}"]
@@ -53,13 +57,14 @@ class ShellTool(Tool):
     }
 
     def __init__(self, allow: bool = True, policy: SecurityPolicy | None = None):
+        # The policy may be shared with other tools, so an explicit allow=False
+        # is kept locally instead of mutating it.
         self.policy = policy or SecurityPolicy()
-        # An explicit allow=False always wins, for direct/programmatic use.
-        if not allow:
-            self.policy.allow_shell = False
-        self.allow = self.policy.allow_shell
+        self.allow = bool(allow) and self.policy.allow_shell
 
     def run(self, command: str, cwd: str | None = None, timeout: int = 60) -> str:
+        if not self.allow:
+            return SHELL_DISABLED_MESSAGE
         try:
             self.policy.check_command(command)
             workdir = str(self.policy.check_path(cwd)) if cwd else None

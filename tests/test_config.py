@@ -4,7 +4,7 @@ import pytest
 
 yaml = pytest.importorskip("yaml")
 
-from jarvis.config import Config
+from jarvis.config import Config  # noqa: E402 - imported after the yaml guard
 
 CONFIG = """
 backend: my-gateway
@@ -70,3 +70,13 @@ def test_policy_and_subsystems(tmp_path: Path):
     assert config.integrations["hass"]["base_url"].startswith("http://")
     assert config.interface.hotkey == "ctrl+shift+j"
     assert config.voice.enabled is True
+
+
+def test_shell_kill_switch_reaches_the_tool(tmp_path: Path):
+    from jarvis.tools.shell import ShellTool
+
+    config = Config.load(tmp_path / "missing.yaml")
+    config.allow_shell = False
+    tool = ShellTool(allow=config.allow_shell, policy=config.policy())
+
+    assert "disabled" in tool.run(command="echo hi")

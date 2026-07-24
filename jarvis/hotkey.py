@@ -6,7 +6,7 @@ Two backends are tried in order:
 2. ``keyboard`` — Windows-friendly, needs root on Linux.
 
 \\* macOS requires granting Accessibility + Input Monitoring permission to the
-terminal or app running Jarvis (System Settings → Privacy & Security).
+terminal or app running Jarvis (System Settings -> Privacy & Security).
 
 Hotkeys are written in the familiar ``ctrl+alt+space`` form and translated to
 the backend syntax automatically.
@@ -65,48 +65,53 @@ class HotkeyManager:
         # Never block the OS keyboard hook.
         threading.Thread(target=callback, daemon=True).start()
 
+    def _start_pynput(self) -> None:
+        from pynput import keyboard as pynput_keyboard
+
+        mapping = {
+            to_pynput(combo): (lambda cb=cb: self._dispatch(cb))
+            for combo, cb in self._bindings.items()
+        }
+        listener = pynput_keyboard.GlobalHotKeys(mapping)
+        listener.daemon = True
+        listener.start()
+        self._listener = listener
+
+    def _start_keyboard(self) -> None:
+        import keyboard as kb
+
+        for combo, cb in self._bindings.items():
+            kb.add_hotkey(combo, lambda cb=cb: self._dispatch(cb))
+
     def start(self) -> str:
-        """Start listening. Returns the backend name, or raises RuntimeError."""
+        """Start listening. Returns the backend name, or raises RuntimeError.
+
+        Each backend is tried in turn; the last failure is reported if none of
+        them works (missing package, missing macOS permission, no root on X11).
+        """
 
         if not self._bindings:
             raise RuntimeError("No hotkeys registered.")
 
-        try:
-            from pynput import keyboard as pynput_keyboard
+        errors: list[str] = []
+        for name, starter in (("pynput", self._start_pynput), ("keyboard", self._start_keyboard)):
+            try:
+                starter()
+            except ImportError:
+                errors.append(f"{name}: not installed")
+            except Exception as exc:  # noqa: BLE001 - backend availability varies by OS
+                errors.append(f"{name}: {exc}")
+            else:
+                self._backend = name
+                return name
 
-            mapping = {
-                to_pynput(combo): (lambda cb=cb: self._dispatch(cb))
-                for combo, cb in self._bindings.items()
-            }
-            self._listener = pynput_keyboard.GlobalHotKeys(mapping)
-            self._listener.daemon = True
-            self._listener.start()
-            self._backend = "pynput"
-            return self._backend
-        except ImportError:
-            pass
-        except Exception as exc:  # noqa: BLE001 - e.g. missing macOS permissions
-            last_error: Exception | None = exc
-        else:  # pragma: no cover
-            last_error = None
-
-        try:
-            import keyboard as kb
-
-            for combo, cb in self._bindings.items():
-                kb.add_hotkey(combo, lambda cb=cb: self._dispatch(cb))
-            self._backend = "keyboard"
-            return self._backend
-        except ImportError as exc:
-            raise RuntimeError(
-                "Global hotkeys need 'pynput' or 'keyboard'. Install with "
-                '`pip install "jarvis-desktop[hotkey]"`.'
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(
-                f"Could not register global hotkeys: {exc}. On Linux the 'keyboard' "
-                "backend needs root; on macOS grant Input Monitoring permission."
-            ) from exc
+        raise RuntimeError(
+            "Could not register global hotkeys ("
+            + "; ".join(errors)
+            + "). Install with `pip install \"jarvis-desktop[hotkey]\"`. "
+            "On Linux the 'keyboard' backend needs root; on macOS grant Input "
+            "Monitoring permission to your terminal."
+        )
 
     def stop(self) -> None:
         if self._listener is not None:
@@ -122,3 +127,4 @@ class HotkeyManager:
                 kb.unhook_all_hotkeys()
             except Exception:  # noqa: BLE001
                 pass
+        self._backend = ""
