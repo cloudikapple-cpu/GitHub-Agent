@@ -15,7 +15,7 @@ from typing import Any, Callable
 import requests
 
 LOGGER = logging.getLogger(__name__)
-API = "https://api.telegram.org/bot{token}/{method}"
+API_TEMPLATE = "https://api.telegram.org/bot{token}/{method}"
 
 
 class TelegramBot:
@@ -30,15 +30,18 @@ class TelegramBot:
     # ------------------------------------------------------------------
     def _call(self, method: str, **payload: Any) -> dict[str, Any]:
         response = requests.post(
-            API.format(token=self.config.token, method=method), json=payload, timeout=70
+            API_TEMPLATE.format(token=self.config.token, method=method),
+            json=payload,
+            timeout=70,
         )
         response.raise_for_status()
         return response.json()
 
     def send(self, chat_id: int | str, text: str) -> None:
-        for chunk in (text[i : i + 3800] for i in range(0, max(len(text), 1), 3800)):
+        text = text or "(empty)"
+        for start in range(0, len(text), 3800):
             try:
-                self._call("sendMessage", chat_id=chat_id, text=chunk or "(empty)")
+                self._call("sendMessage", chat_id=chat_id, text=text[start : start + 3800])
             except requests.RequestException as exc:
                 LOGGER.warning("Telegram send failed: %s", exc)
                 return

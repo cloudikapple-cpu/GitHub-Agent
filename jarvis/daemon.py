@@ -1,14 +1,18 @@
-"""Background daemon: global hotkeys + overlay window + voice.
+"""Background daemon: global hotkeys, tray icon, reminders, overlay and voice.
 
 Run it with ``jarvis --daemon``. It stays resident and reacts to:
 
 * ``interface.hotkey``       — opens the window with the text field focused;
-* ``interface.voice_hotkey`` — opens the window and starts recording at once.
+* ``interface.voice_hotkey`` — opens the window and starts recording at once;
+* the tray icon              — the same actions without a keyboard;
+* due reminders and tasks    — notifications, or unattended agent runs;
+* Telegram messages          — when the bot is enabled.
 """
 
 from __future__ import annotations
 
 import sys
+import threading
 
 from .agent import Agent
 from .config import Config
@@ -66,6 +70,60 @@ def run_daemon(config: Config | None = None) -> int:
     except RuntimeError as exc:
         hint = f"Hotkeys unavailable ({exc})"
 
+    # -- reminders and scheduled tasks ---------------------------------
+    scheduler = getattr(agent, "scheduler", None)
+
+    def handle_job(job) -> None:
+        if job.kind == "task":
+            def worker() -> None:
+                reply = agent.run(job.text)
+                window.push_event("assistant", reply)
+                if config.interface.notify:
+                    notify("Jarvis — scheduled task", reply[:200])
+
+            threading.Thread(target=worker, name=f"jarvis-{job.id}", daemon=True).start()
+            return
+
+        notify("Jarvis — reminder", job.text)
+        window.push_event("trace", f"[reminder] {job.text}")
+        if voice is not None and config.voice.speak_replies:
+            threading.Thread(
+                target=lambda: voice.speak(job.text), name="jarvis-speak", daemon=True
+            ).start()
+
+    if scheduler is not None:
+        scheduler.start(handle_job)
+        hint += f", scheduler on ({len(scheduler.list())} jobs)"
+
+    # -- tray icon ------------------------------------------------------
+    tray = None
+    if config.interface.tray:
+        from .tray import TrayIcon
+
+        tray = TrayIcon(
+            on_open=open_window,
+            on_voice=open_and_listen if voice is not None else open_window,
+            on_quit=lambda: window.root.after(0, window.root.quit),
+            hotkey=config.interface.hotkey,
+        )
+        if tray.start():
+            hint += ", tray on"
+
+    # -- telegram -------------------------------------------------------
+    bot = None
+    if config.telegram.enabled:
+        from .telegram_bot import TelegramBot
+
+        def telegram_agent(confirm_hook):
+            return Agent.from_config(config, confirm_hook=confirm_hook, persist_memory=False)
+
+        bot = TelegramBot(config, telegram_agent)
+        try:
+            threading.Thread(target=bot.run, name="jarvis-telegram", daemon=True).start()
+            hint += ", telegram on"
+        except ValueError as exc:
+            hint += f", telegram off ({exc})"
+
     print(hint)
     if config.interface.notify:
         notify("Jarvis", hint)
@@ -75,4 +133,10 @@ def run_daemon(config: Config | None = None) -> int:
         window.run()
     finally:
         hotkeys.stop()
+        if scheduler is not None:
+            scheduler.stop()
+        if bot is not None:
+            bot.stop()
+        if tray is not None and tray.available():
+            tray.stop()
     return 0
