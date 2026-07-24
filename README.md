@@ -1,168 +1,197 @@
-# Jarvis — расширяемый ИИ-ассистент для рабочего стола
+# Jarvis
 
-Jarvis — это персональный ИИ-ассистент, который выполняет реальные задачи на вашем
-компьютере: ищет в интернете, читает и пишет файлы, запускает команды и скрипты,
-открывает программы и сайты, управляет клавиатурой и мышью. Он работает как через
-**облачные API** (OpenAI, Anthropic), так и через **локальную модель** (Ollama) —
-без отправки данных наружу.
-
-> ⚠️ **Ранняя версия (v0.1).** Это рабочий, но базовый каркас. Он умеет рассуждать,
-> вызывать инструменты и выполнять цепочки действий. Голосовой интерфейс, память на
-> диске и графический интерфейс — в планах (см. Roadmap ниже).
-
-## Возможности
-
-- 🧠 **Несколько «мозгов» на выбор** — OpenAI, Anthropic или локальная модель через Ollama.
-  Переключаются одной настройкой.
-- 🛠️ **Инструменты (tools)** — ассистент сам решает, какой инструмент вызвать:
-  - `web_search`, `web_fetch` — поиск и чтение страниц в интернете;
-  - `read_file`, `write_file`, `list_directory` — работа с файлами;
-  - `run_shell`, `run_python` — выполнение команд и кода;
-  - `open_path` — открыть файл, папку, программу или ссылку;
-  - `take_screenshot`, `type_text`, `press_hotkey` — управление рабочим столом.
-- 🔒 **Подтверждение действий** — перед потенциально опасными действиями (запуск команд,
-  запись файлов, управление вводом) ассистент спрашивает разрешение в терминале.
-- 🧩 **Легко расширять** — новый инструмент = один класс, унаследованный от `Tool`.
-
-## Архитектура
+An extensible desktop AI assistant in Python. It talks to any LLM, uses tools to
+actually do things on your computer, and can be summoned with a global hotkey by
+voice or by text.
 
 ```
-jarvis/
-├── agent.py          # цикл рассуждения: LLM ↔ инструменты
-├── config.py         # загрузка настроек из .env и config.yaml
-├── memory.py         # история диалога
-├── cli.py            # интерфейс командной строки
-├── llm/              # бэкенды моделей
-│   ├── base.py       # общий интерфейс + типы (ToolCall, LLMResponse)
-│   ├── openai_backend.py
-│   ├── anthropic_backend.py
-│   └── ollama_backend.py
-└── tools/            # инструменты (возможности)
-    ├── base.py       # Tool, ToolRegistry
-    ├── web.py
-    ├── files.py
-    ├── shell.py
-    └── desktop.py
+you> find every TODO in ~/projects, create a report folder and write summary.md
 ```
 
-Цикл работы простой: пользователь пишет запрос → модель либо отвечает текстом, либо
-запрашивает вызов инструмента → Jarvis выполняет инструмент, возвращает результат
-модели → повторяется, пока задача не решена (или не достигнут лимит шагов).
+## What it can do
 
-## Установка
+| Area | Capabilities |
+| --- | --- |
+| Internet | `web_search` (DuckDuckGo), `web_fetch` (page text), `http_request` (any REST API) |
+| Files | read, write, append, list, `make_directory`, `delete_path`, `move_path`, `copy_path`, `find_files` (with content search) |
+| Code | `write_file` + `run_python` + `run_shell` — write code, run it, read the output, iterate |
+| Apps | `install_app` / `uninstall_app` (winget, choco, scoop, brew, apt, dnf, pacman, zypper, snap, flatpak), `list_installed_apps` |
+| System | `list_processes`, `kill_process`, `system_info` |
+| Desktop | `open_path`, `take_screenshot`, `type_text`, `press_hotkey`, `clipboard`, `notify` |
+| Skills | your own Python or YAML skills, auto-loaded from `~/.jarvis/skills` |
+| Interfaces | terminal REPL, one-shot CLI, desktop window, global hotkey, voice |
 
-Нужен **Python 3.10+**.
+## Install
 
 ```bash
 git clone https://github.com/cloudikapple-cpu/GitHub-Agent.git
 cd GitHub-Agent
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e ".[all]"        # or: pip install -e ".[openai,web,desktop,hotkey]"
+cp .env.example .env           # put your API key here
+cp config.example.yaml config.yaml
 ```
 
-Все пакеты в `requirements.txt`, кроме первого блока, опциональны — ставьте только то,
-чем пользуетесь (например, только `openai`, или только `pyautogui` для управления столом).
+Linux also needs `python3-tk` for the window, and `notify-send` for notifications.
 
-## Настройка
-
-Скопируйте пример конфигурации и заполните ключи:
+## Run
 
 ```bash
-cp .env.example .env
+jarvis                          # interactive terminal
+jarvis -m "summarise my notes"  # one-shot
+jarvis --gui                    # desktop window (text + microphone)
+jarvis --voice                  # speak your requests
+jarvis --daemon                 # background: hotkey summons the window
+jarvis --list-tools             # what it can do right now
+jarvis -v                       # show every tool call and result
 ```
 
-Откройте `.env` и укажите нужное:
+### Global hotkey
 
-```dotenv
-JARVIS_BACKEND=openai          # openai | anthropic | ollama
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+With `jarvis --daemon` running, press:
+
+- **Ctrl+Alt+Space** — open the window with the cursor in the input field;
+- **Ctrl+Alt+V** — open it and start recording your voice immediately.
+
+Both are configurable (`interface.hotkey`, `interface.voice_hotkey`). macOS needs
+Input Monitoring permission for the terminal/app running Jarvis.
+
+## Any custom API
+
+Any OpenAI-compatible endpoint works — OpenRouter, Groq, Together, DeepSeek,
+Mistral, Fireworks, LM Studio, vLLM, llama.cpp, or a corporate gateway.
+
+```yaml
+# config.yaml
+backend: my-gateway
+
+providers:
+  my-gateway:
+    kind: openai              # openai | anthropic | ollama
+    model: llama-3.3-70b
+    base_url: https://api.example.com/v1
+    api_key: ${MY_TOKEN}      # read from the environment
+    headers:                  # any extra headers the provider needs
+      X-Title: Jarvis
+    temperature: 0.2
+    extra_body:               # provider-specific parameters
+      reasoning_effort: high
 ```
 
-Для локальной модели установите [Ollama](https://ollama.com), запустите её и скачайте
-модель с поддержкой вызова инструментов:
+Or entirely from the environment, with no config file:
 
 ```bash
-ollama serve
-ollama pull llama3.1
+JARVIS_BACKEND=custom JARVIS_API_BASE=https://api.example.com/v1 \
+JARVIS_API_KEY=sk-... JARVIS_MODEL=llama-3.3-70b jarvis
 ```
 
-и поставьте `JARVIS_BACKEND=ollama` в `.env`.
+Or per run: `jarvis -b custom --api-base http://localhost:1234/v1 --model local-model`.
 
-Тонкую настройку поведения можно вынести в `config.yaml` (см. `config.example.yaml`).
-
-## Запуск
-
-Интерактивный режим (чат в терминале):
-
-```bash
-python -m jarvis
-```
-
-Одна команда без диалога:
-
-```bash
-python -m jarvis -m "найди последние новости об ИИ и сделай краткую сводку"
-python -m jarvis -b ollama -m "покажи, что лежит в моей папке Загрузки"
-```
-
-Полезные флаги:
-
-| Флаг | Описание |
-| --- | --- |
-| `-m, --message` | выполнить один запрос и выйти |
-| `-b, --backend` | переопределить бэкенд (`openai`/`anthropic`/`ollama`) |
-| `-v, --verbose` | показывать вызовы инструментов в реальном времени |
-| `--no-confirm` | не спрашивать подтверждение (используйте осторожно) |
-
-В интерактивном режиме команды `reset` очищает историю, `exit` — выход.
-
-## Как добавить свой инструмент
+Need a protocol nobody supports? Register your own backend class:
 
 ```python
-from jarvis.tools.base import Tool
-
-class WeatherTool(Tool):
-    name = "get_weather"
-    description = "Узнать погоду в городе."
-    parameters = {
-        "type": "object",
-        "properties": {"city": {"type": "string"}},
-        "required": ["city"],
-    }
-
-    def run(self, city: str) -> str:
-        ...  # ваша логика
-        return "В Минске +18°C, ясно."
+from jarvis.llm import register_backend
+register_backend("my-protocol", lambda provider: MyBackend(provider))
 ```
 
-Затем добавьте его в `jarvis/tools/__init__.py:build_default_registry`.
+## Your own skills
 
-## Тесты
+Drop files into `~/.jarvis/skills/` (or `./skills/`). Python skills add real
+tools:
+
+```python
+from jarvis.tools.base import FunctionTool
+
+def register(registry, config):
+    registry.register(FunctionTool(
+        name="deploy",
+        description="Deploy the current project to staging.",
+        parameters={"type": "object", "properties": {}},
+        func=lambda: "deployed",
+        requires_confirmation=True,
+    ))
+```
+
+YAML skills are reusable instructions the model can invoke by name:
+
+```yaml
+name: daily_report
+description: Build my daily report.
+prompt: |
+  Read ~/notes/today.md, summarise it in five bullets,
+  then save the result to ~/reports/report.md.
+```
+
+## Integrations with other apps
+
+Declare a service once; the model calls it without ever seeing your token:
+
+```yaml
+integrations:
+  notion:
+    base_url: https://api.notion.com/v1
+    headers:
+      Authorization: Bearer ${NOTION_TOKEN}
+      Notion-Version: "2022-06-28"
+  home_assistant:
+    base_url: http://homeassistant.local:8123/api
+    headers:
+      Authorization: Bearer ${HASS_TOKEN}
+```
+
+Then: *"turn off the kitchen lights"* → `http_request(service="home_assistant", ...)`.
+
+## Safety
+
+Full control is powerful, so there are guard rails. See [SECURITY.md](SECURITY.md).
+
+- Every risky tool asks for confirmation before running.
+- `security.allowed_roots` limits the filesystem to chosen folders.
+- Secrets (`.ssh`, `.aws`, `*.pem`, `.env`, …) are always off limits.
+- Catastrophic commands (`rm -rf /`, `mkfs`, `curl | sh`, `Format-Volume`, …) are refused.
+- Installing/removing applications is **off by default**.
+- Every guarded action is written to `~/.jarvis/audit.log`.
+- Kill switches: `JARVIS_ALLOW_SHELL`, `JARVIS_ALLOW_EXEC`, `JARVIS_ALLOW_DESKTOP`,
+  `JARVIS_ALLOW_APP_MANAGEMENT`, `JARVIS_ALLOW_NETWORK`.
+
+`--yolo` disables confirmations and enables app management. Use it only in a VM.
+
+## Architecture
+
+```
+jarvis/
+  agent.py         reasoning loop: LLM <-> tools
+  config.py        providers, security, voice, interface, memory, integrations
+  security.py      path sandbox, command deny-list, audit log
+  memory.py        conversation history, persistence, context budget
+  skills.py        loads user skills (.py and .yaml)
+  voice.py         speech-to-text and text-to-speech
+  hotkey.py        global shortcuts (pynput / keyboard)
+  ui.py            Tkinter window with text + microphone
+  daemon.py        background process tying hotkey + window + voice
+  cli.py           command line interface
+  llm/             openai (any compatible API), anthropic, ollama
+  tools/           web, files, shell, apps, desktop, integrations
+```
+
+## Development
 
 ```bash
-pip install pytest
-pytest
+pip install -e ".[dev]"
+pytest -q
+ruff check jarvis tests
 ```
-
-Тесты не требуют ни ключей API, ни интернета — используется поддельный (scripted) бэкенд.
-
-## Безопасность
-
-- Реальные ключи храните только в `.env` (он в `.gitignore`, в репозиторий не попадёт).
-- По умолчанию включено подтверждение действий. Не отключайте `--no-confirm` без нужды.
-- Инструменты `run_shell` / `run_python` дают ассистенту полный доступ к системе —
-  используйте их осознанно и на доверенных моделях.
 
 ## Roadmap
 
-- [ ] Сохранение памяти между сессиями (на диск / векторное хранилище).
-- [ ] Голосовой ввод/вывод (speech-to-text + text-to-speech) — «настоящий Джарвис».
-- [ ] Планировщик задач и фоновые «навыки» (расписание, триггеры).
-- [ ] Графический интерфейс / трей-приложение.
-- [ ] Управление окнами и распознавание элементов экрана.
-- [ ] Плагины сообщества и загрузка инструментов из отдельных пакетов.
+- Long-term semantic memory (embeddings over your notes and past sessions)
+- Scheduler: run skills on a timer or on file/system events
+- System tray icon with a proper always-on daemon and autostart
+- Streaming replies and interruptible runs
+- MCP client support to reuse the whole Model Context Protocol tool ecosystem
+- Vision: screenshot understanding for real GUI automation
+- Sandboxed execution (Docker/Firejail) for untrusted code
+- Multi-agent delegation (planner + workers)
 
-## Лицензия
+## License
 
-MIT — см. файл [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

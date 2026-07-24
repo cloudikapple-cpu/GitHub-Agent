@@ -1,11 +1,32 @@
-"""Built-in tools and a helper to assemble the default tool set."""
+"""Tool registry assembly.
+
+``build_default_registry(config)`` wires every built-in capability to the
+security policy described by the config, then loads the user's own skills.
+"""
 
 from __future__ import annotations
 
-from ..config import Config
+from .apps import (
+    InstallAppTool,
+    KillProcessTool,
+    ListInstalledAppsTool,
+    ProcessListTool,
+    SystemInfoTool,
+    UninstallAppTool,
+)
 from .base import FunctionTool, Tool, ToolRegistry
 from .desktop import HotkeyTool, OpenPathTool, ScreenshotTool, TypeTextTool
-from .files import ListDirectoryTool, ReadFileTool, WriteFileTool
+from .files import (
+    CopyPathTool,
+    DeletePathTool,
+    FindFilesTool,
+    ListDirectoryTool,
+    MakeDirectoryTool,
+    MovePathTool,
+    ReadFileTool,
+    WriteFileTool,
+)
+from .integrations import ClipboardTool, HttpRequestTool, ListIntegrationsTool, NotifyTool
 from .shell import PythonExecTool, ShellTool
 from .web import WebFetchTool, WebSearchTool
 
@@ -17,21 +38,72 @@ __all__ = [
 ]
 
 
-def build_default_registry(config: Config) -> ToolRegistry:
-    """Create a registry populated with the standard Jarvis tool set."""
+def _tag(tools: list[Tool], category: str) -> list[Tool]:
+    for tool in tools:
+        tool.category = category
+    return tools
 
-    return ToolRegistry(
+
+def build_default_registry(config) -> ToolRegistry:
+    """Create the registry with all built-in tools plus user skills."""
+
+    policy = config.policy()
+    registry = ToolRegistry()
+
+    for tool in _tag([WebSearchTool(), WebFetchTool()], "web"):
+        registry.register(tool)
+
+    for tool in _tag(
         [
-            WebSearchTool(),
-            WebFetchTool(),
-            ReadFileTool(),
-            WriteFileTool(),
-            ListDirectoryTool(),
-            ShellTool(allow=config.allow_shell),
-            PythonExecTool(),
-            OpenPathTool(),
-            ScreenshotTool(),
-            TypeTextTool(),
-            HotkeyTool(),
-        ]
-    )
+            ReadFileTool(policy),
+            WriteFileTool(policy),
+            ListDirectoryTool(policy),
+            MakeDirectoryTool(policy),
+            DeletePathTool(policy),
+            MovePathTool(policy),
+            CopyPathTool(policy),
+            FindFilesTool(policy),
+        ],
+        "files",
+    ):
+        registry.register(tool)
+
+    for tool in _tag(
+        [ShellTool(allow=config.allow_shell, policy=policy), PythonExecTool(policy)], "system"
+    ):
+        registry.register(tool)
+
+    for tool in _tag(
+        [
+            InstallAppTool(policy),
+            UninstallAppTool(policy),
+            ListInstalledAppsTool(policy),
+            ProcessListTool(policy),
+            KillProcessTool(policy),
+            SystemInfoTool(policy),
+        ],
+        "apps",
+    ):
+        registry.register(tool)
+
+    for tool in _tag(
+        [OpenPathTool(), ScreenshotTool(), TypeTextTool(), HotkeyTool()], "desktop"
+    ):
+        registry.register(tool)
+
+    for tool in _tag(
+        [
+            HttpRequestTool(config.integrations, policy),
+            ListIntegrationsTool(config.integrations),
+            ClipboardTool(),
+            NotifyTool(),
+        ],
+        "integrations",
+    ):
+        registry.register(tool)
+
+    # User skills last, so they can override a built-in tool by name.
+    from ..skills import load_skills
+
+    load_skills(registry, config)
+    return registry

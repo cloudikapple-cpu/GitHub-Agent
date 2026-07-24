@@ -1,24 +1,94 @@
-# Optional YAML config. Copy to config.yaml to override defaults.
-# Values here take precedence over environment variables.
-# Anything you leave out falls back to the .env / environment values.
+# Copy to config.yaml and edit. Every value is optional.
+# ${VAR} references are read from the environment / .env file.
 
-backend: openai            # openai | anthropic | ollama
+# Which provider from the `providers` block to use.
+backend: openai
 
-openai:
-  model: gpt-4o-mini
-  # api_key: sk-...        # better to keep the key in .env
+providers:
+  openai:
+    kind: openai
+    model: gpt-4o-mini
+    api_key: ${OPENAI_API_KEY}
 
-anthropic:
-  model: claude-3-5-sonnet-latest
+  anthropic:
+    kind: anthropic
+    model: claude-3-5-sonnet-latest
+    api_key: ${ANTHROPIC_API_KEY}
 
-ollama:
-  host: http://localhost:11434
-  model: llama3.1
+  ollama:
+    kind: ollama
+    model: llama3.1
+    base_url: http://localhost:11434
+
+  # Any OpenAI-compatible API: OpenRouter, Groq, Together, DeepSeek,
+  # LM Studio, vLLM, llama.cpp, a corporate gateway...
+  openrouter:
+    kind: openai
+    model: deepseek/deepseek-chat
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+    headers:
+      HTTP-Referer: https://example.com
+      X-Title: Jarvis
+    temperature: 0.3
+    max_tokens: 4096
+
+  lmstudio:
+    kind: openai
+    model: local-model
+    base_url: http://localhost:1234/v1
 
 behaviour:
+  require_confirmation: true    # ask before risky actions
+  max_iterations: 12            # tool calls per request
+  persona: ""                   # extra system instructions
+
+security:
   allow_shell: true
-  require_confirmation: true
-  max_iterations: 12
-  # Extra text appended to the system prompt to shape the assistant's persona.
-  persona: >
-    You are Jarvis, a proactive and concise desktop assistant.
+  allow_exec: true              # run_python
+  allow_desktop: true           # keyboard/mouse/screenshots
+  allow_app_management: false   # install/uninstall software
+  allow_network: true
+  # Empty = the whole filesystem. Restrict it if you want a sandbox.
+  allowed_roots: []
+  # allowed_roots:
+  #   - ~/projects
+  #   - ~/Documents
+  audit_log: ~/.jarvis/audit.log
+
+memory:
+  persist: true
+  path: ~/.jarvis/history.json
+  max_messages: 60
+  max_chars: 24000
+
+interface:
+  hotkey: ctrl+alt+space        # open the window
+  voice_hotkey: ctrl+alt+v      # open it and start listening
+  overlay: true
+  notify: true
+
+voice:
+  enabled: false
+  stt: whisper                  # whisper | google | vosk
+  whisper_model: base
+  language: ru
+  tts: pyttsx3                  # pyttsx3 | none
+  speak_replies: true
+  record_seconds: 8
+
+skills_dirs:
+  - ~/.jarvis/skills
+  - ./skills
+
+# Named REST services exposed through the http_request tool.
+integrations:
+  # notion:
+  #   base_url: https://api.notion.com/v1
+  #   headers:
+  #     Authorization: Bearer ${NOTION_TOKEN}
+  #     Notion-Version: "2022-06-28"
+  # home_assistant:
+  #   base_url: http://homeassistant.local:8123/api
+  #   headers:
+  #     Authorization: Bearer ${HASS_TOKEN}
