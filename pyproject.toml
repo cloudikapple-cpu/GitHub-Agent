@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-desktop"
+version = "0.1.0"
+description = "An extensible desktop AI assistant with pluggable LLM backends and tools."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "python-dotenv>=1.0",
+    "PyYAML>=6.0",
+    "requests>=2.31",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.30"]
+anthropic = ["anthropic>=0.34"]
+web = ["duckduckgo-search>=6.0", "beautifulsoup4>=4.12"]
+desktop = ["pyautogui>=0.9.54"]
+all = [
+    "openai>=1.30",
+    "anthropic>=0.34",
+    "duckduckgo-search>=6.0",
+    "beautifulsoup4>=4.12",
+    "pyautogui>=0.9.54",
+]
+
+[project.scripts]
+jarvis = "jarvis.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jarvis*"]

@@ -1,0 +1,24 @@
+# Optional YAML config. Copy to config.yaml to override defaults.
+# Values here take precedence over environment variables.
+# Anything you leave out falls back to the .env / environment values.
+
+backend: openai            # openai | anthropic | ollama
+
+openai:
+  model: gpt-4o-mini
+  # api_key: sk-...        # better to keep the key in .env
+
+anthropic:
+  model: claude-3-5-sonnet-latest
+
+ollama:
+  host: http://localhost:11434
+  model: llama3.1
+
+behaviour:
+  allow_shell: true
+  require_confirmation: true
+  max_iterations: 12
+  # Extra text appended to the system prompt to shape the assistant's persona.
+  persona: >
+    You are Jarvis, a proactive and concise desktop assistant.

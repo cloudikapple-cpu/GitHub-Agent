@@ -1,0 +1,17 @@
+# --- Core (required) ---
+python-dotenv>=1.0
+PyYAML>=6.0
+requests>=2.31
+rich>=13.0
+
+# --- LLM backends (install what you use) ---
+openai>=1.30           # OpenAI API backend
+anthropic>=0.34        # Anthropic API backend
+# Local models are served via Ollama (https://ollama.com) over HTTP — no extra package needed.
+
+# --- Web tools ---
+duckduckgo-search>=6.0 # web search (optional, has HTTP fallback)
+beautifulsoup4>=4.12   # cleaner HTML -> text (optional, has regex fallback)
+
+# --- Desktop control (optional) ---
+pyautogui>=0.9.54      # mouse/keyboard/screenshot automation
