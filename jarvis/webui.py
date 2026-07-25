@@ -10,7 +10,8 @@ Security, briefly: the server binds to ``127.0.0.1`` by default and every API
 call requires a token that is generated at startup and embedded in the opened
 URL. Anything that can talk to this port can run shell commands as you, so
 changing the host is a deliberate act, not a default. Failures are reported to
-the page as a short sentence; the details go to the log, not to the browser.
+the page as a short sentence, the details go to the log, and request lines are
+never logged at all -- they carry the token in the query string.
 """
 
 from __future__ import annotations
@@ -334,9 +335,13 @@ def _make_handler(server: WebServer) -> type[BaseHTTPRequestHandler]:
         server_version = "Jarvis"
         protocol_version = "HTTP/1.1"
 
-        # Access logs belong in the log file, not in the user's terminal.
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
-            LOGGER.debug("web: " + format, *args)
+            """Log nothing.
+
+            The default implementation writes the request line to stderr, and
+            every request line carries the session token in its query string.
+            A convenience log is not worth writing a credential to disk.
+            """
 
         # -- helpers ----------------------------------------------------
         def _authorised(self, query: dict[str, list[str]]) -> bool:
