@@ -60,6 +60,31 @@ _SANDBOX_MODES = ("none", "docker", "firejail")
 _SANDBOX_OFF = {"", "0", "false", "no", "off"}
 _SANDBOX_ON = {"1", "true", "yes", "on"}
 
+#: Provider fields that can be set straight from the environment.
+#: Kept at module level: an annotated dict inside the dataclass would be read
+#: as a field with a mutable default.
+_ENV_PROVIDER_FIELDS = {
+    "openai": {
+        "model": ("OPENAI_MODEL",),
+        "api_key": ("OPENAI_API_KEY",),
+        "base_url": ("OPENAI_BASE_URL",),
+    },
+    "anthropic": {
+        "model": ("ANTHROPIC_MODEL",),
+        "api_key": ("ANTHROPIC_API_KEY",),
+        "base_url": ("ANTHROPIC_BASE_URL",),
+    },
+    "ollama": {
+        "model": ("OLLAMA_MODEL",),
+        "base_url": ("OLLAMA_HOST",),
+    },
+    "nim": {
+        "model": ("NVIDIA_MODEL",),
+        "api_key": ("NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"),
+        "base_url": ("NVIDIA_BASE_URL",),
+    },
+}
+
 
 def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
@@ -419,29 +444,6 @@ class Config:
         return _as_list(value)
 
     # ------------------------------------------------------------------
-    #: Provider fields that can be set straight from the environment.
-    _ENV_PROVIDER_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
-        "openai": {
-            "model": ("OPENAI_MODEL",),
-            "api_key": ("OPENAI_API_KEY",),
-            "base_url": ("OPENAI_BASE_URL",),
-        },
-        "anthropic": {
-            "model": ("ANTHROPIC_MODEL",),
-            "api_key": ("ANTHROPIC_API_KEY",),
-            "base_url": ("ANTHROPIC_BASE_URL",),
-        },
-        "ollama": {
-            "model": ("OLLAMA_MODEL",),
-            "base_url": ("OLLAMA_HOST",),
-        },
-        "nim": {
-            "model": ("NVIDIA_MODEL",),
-            "api_key": ("NVIDIA_API_KEY", "NVIDIA_NIM_API_KEY"),
-            "base_url": ("NVIDIA_BASE_URL",),
-        },
-    }
-
     def _apply_env_providers(self) -> None:
         """Apply the classic per-provider variables, if they are set.
 
@@ -449,7 +451,7 @@ class Config:
         ``config.yaml`` keeps every field the environment says nothing about.
         """
 
-        for provider_name, fields in self._ENV_PROVIDER_FIELDS.items():
+        for provider_name, fields in _ENV_PROVIDER_FIELDS.items():
             provider = self.providers.get(provider_name)
             if provider is None:
                 continue
@@ -766,7 +768,9 @@ class Config:
         )
 
         router = data.get("router") or {}
-        self.router.enabled = _as_bool(router.get("enabled", self.router.enabled), self.router.enabled)
+        self.router.enabled = _as_bool(
+            router.get("enabled", self.router.enabled), self.router.enabled
+        )
         if "enabled" in router:
             self.mark_source("router.enabled", SOURCE_YAML)
         self.router.primary = router.get("primary", self.router.primary)
@@ -834,7 +838,9 @@ class Config:
             self.scheduler.watch_paths = _as_list(scheduler.get("watch_paths"))
 
         vision = data.get("vision") or {}
-        self.vision.enabled = _as_bool(vision.get("enabled", self.vision.enabled), self.vision.enabled)
+        self.vision.enabled = _as_bool(
+            vision.get("enabled", self.vision.enabled), self.vision.enabled
+        )
         self.vision.provider = vision.get("provider", self.vision.provider)
         self.vision.max_width = _as_int(
             vision.get("max_width", self.vision.max_width), self.vision.max_width
