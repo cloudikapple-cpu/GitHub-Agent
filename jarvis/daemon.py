@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+from typing import TYPE_CHECKING
 
 from .agent import Agent
 from .config import Config
@@ -24,13 +25,18 @@ from .hotkey import HotkeyManager
 from .notifications import notify
 from .singleton import AlreadyRunning, SingleInstance
 
+if TYPE_CHECKING:  # pragma: no cover - Tkinter is optional at runtime
+    from .ui import AssistantWindow
+
 LOGGER = logging.getLogger(__name__)
 
 
 def run_daemon(config: Config | None = None) -> int:
+    """Start the resident assistant, refusing to run twice."""
+
     config = config or Config.load()
 
-    from .ui import TK_AVAILABLE, AssistantWindow
+    from .ui import TK_AVAILABLE
 
     if not TK_AVAILABLE:
         print("The daemon needs Tkinter (install 'python3-tk' on Linux).", file=sys.stderr)
@@ -41,7 +47,7 @@ def run_daemon(config: Config | None = None) -> int:
         lock.acquire()
     except AlreadyRunning as exc:
         print(
-            f"{exc} Use the hotkey or the tray icon to reach it, "
+            f"{exc} Reach it with the hotkey or the tray icon, "
             "or stop that process before starting a new daemon.",
             file=sys.stderr,
         )
