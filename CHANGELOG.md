@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+
+- **Desktop tools ignored the security policy.** `open_path`, `take_screenshot`,
+  `type_text` and `press_hotkey` were built without a `SecurityPolicy`, so
+  `JARVIS_ALLOW_DESKTOP=false` had no effect. They are now constructed with the
+  policy and call `check_desktop()` before doing anything.
+- **`open_path` could bypass the shell switch.** Opening a `.exe`, `.bat`,
+  `.ps1`, `.msi` (and other executable extensions) is code execution, so it now
+  also requires `allow_shell`. Every non-URL target goes through `check_path()`,
+  which means `allowed_roots` and the secret deny-list finally apply; URLs
+  require `allow_network`.
+- **Screenshots** are written to `~/.jarvis/screenshots` through `check_path()`
+  instead of a `screenshots/` folder next to the current working directory.
+
+### Added
+
+- **Undo journal** (`jarvis/journal.py`). Deletes move the target into
+  `~/.jarvis/trash` instead of destroying it, overwrites are backed up first,
+  and moves are recorded. Two new tools — `undo_last` and
+  `list_recent_changes` — plus an `undo` command in the REPL.
+- **Permission profiles**: `jarvis --profile safe|dev|yolo` replaces juggling
+  five `JARVIS_ALLOW_*` variables. `--yolo` is now shorthand for the `yolo`
+  profile.
+- **Streaming in the terminal**: `interface.stream` (or `--stream` /
+  `--no-stream`) prints the reply as it is generated. `Agent.stream()` existed
+  since 0.3.0 but nothing called it.
+- **Windows 11 guide** (`docs/windows-11.md`) and a `windows` extra that
+  installs every desktop dependency in one command.
+- Tests for the desktop policy, the undo journal and the profiles.
+
+### Changed
+
+- CI runs on **Windows and macOS** as well as Linux (6 jobs), linting is a
+  separate job, coverage is reported, and the actions were bumped to
+  `checkout@v5` / `setup-python@v6` (the previous versions run on a deprecated
+  Node.js).
+- Dependabot keeps pip and GitHub Actions dependencies up to date.
+- `build_default_registry` is typed against `Config` and shares one journal
+  across every filesystem tool.
+
 ## 0.3.0
 
 ### Added
