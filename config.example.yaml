@@ -1,6 +1,8 @@
 # Jarvis configuration example. Copy to config.yaml and edit.
 # ${VAR} is replaced with the environment variable of that name, so secrets
 # can stay in .env while this file goes into version control.
+# keyring:NAME reads the secret from the OS keychain instead:
+#   jarvis --set-secret NVIDIA_API_KEY
 
 # Which provider to use when the router is off.
 backend: openai
@@ -24,14 +26,38 @@ providers:
   nim:
     kind: openai
     model: meta/llama-3.3-70b-instruct
+    # The key can live in the OS keychain instead of a file:
+    #   api_key: keyring:NVIDIA_API_KEY
     api_key: ${NVIDIA_API_KEY}
     base_url: https://integrate.api.nvidia.com/v1
 
+  # Groq — very fast hosted inference, OpenAI-compatible.
+  groq:
+    kind: openai
+    model: llama-3.3-70b-versatile
+    api_key: ${GROQ_API_KEY}
+    base_url: https://api.groq.com/openai/v1
+
   # Local model: free, private, offline.
+  #   ollama serve && ollama pull llama3.1
   ollama:
     kind: ollama
     model: llama3.1
     base_url: http://localhost:11434
+    timeout: 300
+    temperature: 0.7
+    max_tokens: 2048
+    # Anything else here is passed to Ollama as an option.
+    extra_body:
+      num_ctx: 8192
+      keep_alive: 10m
+
+  # A vision-capable local model, used by the screen tools.
+  ollama-vision:
+    kind: ollama
+    model: llama3.2-vision
+    base_url: http://localhost:11434
+    vision: true
 
   # Local OpenAI-compatible server (LM Studio, vLLM, llama.cpp).
   local:
@@ -89,6 +115,41 @@ knowledge:
   embedding_model: text-embedding-3-small
   top_k: 5
 
+# Repeated questions are answered from disk instead of the model.
+# Replies that call a tool are never cached.
+cache:
+  enabled: true
+  path: ~/.jarvis/cache.db
+  ttl_seconds: 86400
+  max_entries: 5000
+
+# Retrieval over your own files: jarvis --index "~/Documents"
+rag:
+  enabled: false
+  path: ~/.jarvis/documents.db
+  roots:
+    - ~/Documents
+  top_k: 4
+  chunk_size: 1200
+  overlap: 150
+  min_score: 0.12
+
+# A cheap model drafts the steps, the main model carries them out.
+planner:
+  enabled: false
+  provider: ""        # empty means the active provider
+  max_steps: 6
+  min_chars: 280
+
+# Chat with Jarvis in the browser: jarvis --web
+# Every request needs the generated token, so keep the host on loopback.
+web:
+  enabled: false
+  host: 127.0.0.1
+  port: 8765
+  token: ""          # empty means a fresh token at every start
+  open_browser: true
+
 # Reminders and unattended tasks (the daemon runs them).
 scheduler:
   enabled: true
@@ -103,7 +164,11 @@ vision:
 
 voice:
   enabled: false
-  stt: whisper        # whisper | google | vosk
+  # auto  - Groq when GROQ_API_KEY is set, local whisper otherwise
+  # groq  - hosted Whisper: fastest, best Russian, needs GROQ_API_KEY
+  # whisper | google | vosk
+  stt: auto
+  # Local size (tiny/base/small/...) or a Groq model name.
   whisper_model: base
   language: ru
   tts: pyttsx3        # pyttsx3 | none
@@ -111,8 +176,9 @@ voice:
   record_seconds: 8
 
 interface:
-  hotkey: ctrl+alt+space
-  voice_hotkey: ctrl+alt+v
+  # Alt+Shift avoids the Ctrl+Alt combinations Windows and input methods take.
+  hotkey: alt+shift+space
+  voice_hotkey: alt+shift+v
   overlay: true
   notify: true
   tray: true

@@ -51,7 +51,7 @@ def build_backend_from_provider(provider: ProviderConfig) -> LLMBackend:
     if kind in _CUSTOM_BACKENDS:
         return _CUSTOM_BACKENDS[kind](provider)
 
-    if kind in {"openai", "openai-compatible", "custom"}:
+    if kind in {"openai", "openai-compatible", "custom", "groq"}:
         from .openai_backend import OpenAIBackend
 
         return OpenAIBackend.from_provider(provider)
@@ -64,13 +64,12 @@ def build_backend_from_provider(provider: ProviderConfig) -> LLMBackend:
             model=provider.model or "claude-3-5-sonnet-latest",
         )
 
-    if kind == "ollama":
+    if kind in {"ollama", "local"}:
         from .ollama_backend import OllamaBackend
 
-        return OllamaBackend(
-            host=provider.base_url or "http://localhost:11434",
-            model=provider.model or "llama3.1",
-        )
+        # from_provider carries temperature, max_tokens, timeout and any extra
+        # Ollama options, which the plain constructor used to drop.
+        return OllamaBackend.from_provider(provider)
 
     raise ValueError(
         f"Unknown provider kind '{provider.kind}'. Use openai, anthropic, ollama, "
