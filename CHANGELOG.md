@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.2
+
+### Fixed
+
+- **The test suite was red on every platform since 0.4.0.** The trim note added
+  in 0.3.2 (a summary of the turns that left the conversation window) was
+  prepended to the message list but never counted against `max_chars`, so a
+  long session could sit inside its nominal budget while the summary grew past
+  it on its own. The note now has a ceiling of a quarter of `max_chars` (never
+  below 80 characters) and is included in the trimming loop, so the character
+  budget is what the model actually receives.
+- `tests/test_agent.py` still asserted the pre-0.3.2 shape of a trimmed
+  conversation. It now checks the note explicitly, and a companion test covers
+  `compact=False`, where only the window is sent.
+
+### Changed
+
+- **CI explains its own failures.** The pytest output is teed to a log which is
+  uploaded as an artifact per OS/Python combination and, on a pull request,
+  posted as a comment with the failure summary. Diagnosing a red matrix no
+  longer means opening six jobs in the browser.
+
 ## 0.4.1
 
 ### Added
