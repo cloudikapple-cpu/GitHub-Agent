@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-desktop"
-version = "0.4.0"
+version = "0.4.1"
 description = "An extensible desktop AI assistant with tools, skills, MCP, memory, reminders, voice and a global hotkey"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -67,8 +67,8 @@ target-version = "py310"
 select = ["E", "F", "I", "UP", "B"]
 # E501: line length is handled by the formatter.
 # B008: function calls in default arguments are intentional for tool factories.
-# UP035: the codebase consistently imports Callable from typing; migrating all
-#        modules to collections.abc is planned as a separate refactor.
+# UP035: most modules still import Callable from typing; the migration to
+#        collections.abc is happening module by module (ui.py is done).
 ignore = ["E501", "B008", "UP035"]
 
 [tool.pytest.ini_options]

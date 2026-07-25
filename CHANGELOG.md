@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.1
+
+### Added
+
+- **`jarvis --usage`**. The ledger written since 0.3.2 had no way out: the
+  numbers existed in `~/.jarvis/usage.json` and nothing displayed them. The flag
+  prints today's calls, tokens and dollars per provider, accepts a day
+  (`jarvis --usage 2026-07-01`), and works with no config file, no API key and
+  no provider. The REPL understands `usage` as well.
+- **Streaming in the desktop window.** `Agent.stream()` was wired into the
+  terminal in 0.3.1 but the GUI still waited in silence for the whole answer.
+  With `interface.stream` (or `--stream`) the window now renders the reply as it
+  arrives; the daemon passes the same setting through.
+- Tests for the CLI surface: the usage report, the permission profiles and the
+  new flags.
+
+### Changed
+
+- `jarvis/ui.py` imports `Callable` from `collections.abc`, the first module of
+  the `UP035` migration.
+- README documents `run_powershell`, the clipboard history, the Task Scheduler
+  autostart and the usage report; the roadmap drops what 0.3.2 and 0.4.0
+  delivered.
+
 ## 0.4.0
 
 ### Added
