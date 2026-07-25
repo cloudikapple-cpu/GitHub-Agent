@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-desktop"
-version = "0.6.0"
-description = "An extensible desktop AI assistant with tools, skills, MCP, memory, retrieval, reminders, voice, a web interface and a global hotkey"
+version = "0.7.0"
+description = "An extensible desktop AI assistant with local models through Ollama, tools, skills, MCP, memory, retrieval, reminders, voice, a web interface and a global hotkey"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -22,7 +22,10 @@ anthropic = ["anthropic>=0.30"]
 web = ["beautifulsoup4>=4.12", "duckduckgo-search>=6.0"]
 desktop = ["pyautogui>=0.9.54", "pyperclip>=1.8", "psutil>=5.9", "Pillow>=10.0"]
 hotkey = ["pynput>=1.7"]
+# Local transcription. Hosted transcription through Groq needs no extra
+# package: only a microphone (sounddevice) and GROQ_API_KEY.
 voice = ["faster-whisper>=1.0", "sounddevice>=0.4", "pyttsx3>=2.90"]
+microphone = ["sounddevice>=0.4", "pyttsx3>=2.90"]
 notify = ["plyer>=2.1"]
 tray = ["pystray>=0.19", "Pillow>=10.0"]
 # Secrets in the OS keychain instead of a file next to the code.
