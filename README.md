@@ -11,12 +11,16 @@ you> remind me every day at 09:00 to review the inbox
 you> посмотри на экран и скажи, что за ошибка в терминале
 ```
 
+On Windows 11? Follow [docs/windows-11.md](docs/windows-11.md) — install, hotkeys,
+autostart, winget and antivirus notes in one place.
+
 ## What it can do
 
 | Area | Capabilities |
 | --- | --- |
 | Internet | `web_search` (Tavily, DuckDuckGo fallback), `web_fetch` (Tavily Extract → plain HTTP), `http_request` (any REST API) |
 | Files | read, write, append, list, `make_directory`, `delete_path`, `move_path`, `copy_path`, `find_files` (with content search) |
+| Undo | `undo_last`, `list_recent_changes` — deletes go to a trash folder, overwrites are backed up |
 | Code | `write_file` + `run_python` + `run_shell` — write code, run it, read the output, iterate; optionally inside Docker/Firejail |
 | Apps | `install_app` / `uninstall_app` (winget, choco, scoop, brew, apt, dnf, pacman, zypper, snap, flatpak), `list_installed_apps` |
 | System | `list_processes`, `kill_process`, `system_info` |
@@ -39,6 +43,9 @@ cp .env.example .env           # put your API keys here
 cp config.example.yaml config.yaml
 ```
 
+On Windows 11 the `windows` extra pulls in every desktop dependency at once:
+`pip install -e ".[windows,openai]"`.
+
 Linux also needs `python3-tk` for the window and `notify-send` for notifications.
 
 ## Run
@@ -50,6 +57,8 @@ jarvis --gui                    # desktop window (text + microphone)
 jarvis --voice                  # speak your requests
 jarvis --daemon                 # background: hotkey, tray, reminders, Telegram
 jarvis --telegram               # only the Telegram bot
+jarvis --profile safe           # read-only mode (safe | dev | yolo)
+jarvis --stream                 # print the answer as it is generated
 jarvis --dry-run -m "clean up Downloads"   # plan the actions, run nothing
 jarvis --sandbox docker -m "benchmark this script"
 jarvis --autostart install      # start with the system (install | remove | status)
@@ -170,6 +179,20 @@ remind me in 15m to check the deploy
 run "summarise yesterday's commits" every day at 20:00
 ```
 
+## Undo
+
+Destructive filesystem actions are reversible. `delete_path` moves the target to
+`~/.jarvis/trash` instead of destroying it, `write_file` stashes the previous
+version first, and `move_path` records where things came from.
+
+```
+you> delete the old build folder
+you> undo                      # or: "verni papku obratno"
+```
+
+`list_recent_changes` shows the journal (`~/.jarvis/journal.jsonl`, last 500
+entries).
+
 ## MCP servers
 
 Any Model Context Protocol server becomes Jarvis tools — stdio or HTTP, no extra
@@ -250,19 +273,34 @@ cannot show a dialog. The bot refuses to start without a whitelist.
 
 Full control is powerful, so there are guard rails. See [SECURITY.md](SECURITY.md).
 
+### Permission profiles
+
+| Profile | Shell | Code | Keyboard/mouse | Installing apps | Confirmations |
+| --- | --- | --- | --- | --- | --- |
+| `safe` | — | — | — | — | yes |
+| `dev` (default) | yes | yes | yes | — | yes |
+| `yolo` | yes | yes | yes | yes | no |
+
+```bash
+jarvis --profile safe        # a read-only assistant
+jarvis --profile yolo        # only in a VM
+```
+
 - Every risky tool asks for confirmation before running.
+- Destructive file actions are journalled and reversible with `undo_last`.
 - `--dry-run` shows the plan without touching anything.
 - `execution_sandbox.mode: docker|firejail` runs shell and code with no network,
   a memory cap and no access to your home directory.
-- `security.allowed_roots` limits the filesystem to chosen folders.
+- `security.allowed_roots` limits the filesystem to chosen folders — desktop
+  actions, screenshots and `open_path` obey it too.
+- Opening an executable (`.exe`, `.bat`, `.ps1`, `.msi`, …) counts as running
+  code and requires `allow_shell`.
 - Secrets (`.ssh`, `.aws`, `*.pem`, `.env`, …) are always off limits.
 - Catastrophic commands (`rm -rf /`, `mkfs`, `curl | sh`, `Format-Volume`, …) are refused.
 - Installing/removing applications is **off by default**.
 - Every guarded action is written to `~/.jarvis/audit.log`.
 - Kill switches: `JARVIS_ALLOW_SHELL`, `JARVIS_ALLOW_EXEC`, `JARVIS_ALLOW_DESKTOP`,
   `JARVIS_ALLOW_APP_MANAGEMENT`, `JARVIS_ALLOW_NETWORK`.
-
-`--yolo` disables confirmations and enables app management. Use it only in a VM.
 
 ## Architecture
 
@@ -271,6 +309,7 @@ jarvis/
   agent.py         reasoning loop: LLM <-> tools, recall, dry-run, cancellation
   config.py        providers, router, search, security, memory, scheduler, MCP
   security.py      path sandbox, command deny-list, audit log
+  journal.py       undo journal: trash, backups, reversible operations
   sandbox.py       docker / firejail execution
   memory.py        conversation history, persistence, context budget
   knowledge.py     long-term semantic memory (SQLite + embeddings)
@@ -285,13 +324,14 @@ jarvis/
   telegram_bot.py  Telegram front end
   autostart.py     login item for Windows / macOS / Linux
   daemon.py        background process tying it all together
-  cli.py           command line interface
+  cli.py           command line interface, permission profiles, streaming
   llm/             openai (any compatible API), anthropic, ollama, router
-  tools/           web, files, shell, apps, desktop, integrations, memory,
-                   scheduler, vision, delegation
+  tools/           web, files, undo, shell, apps, desktop, integrations,
+                   memory, scheduler, vision, delegation
 ```
 
-Detailed feature guide: [docs/v0.3-autonomy.md](docs/v0.3-autonomy.md).
+Guides: [Windows 11](docs/windows-11.md) ·
+[autonomy features](docs/v0.3-autonomy.md) · [changelog](CHANGELOG.md).
 
 ## Development
 
@@ -301,15 +341,18 @@ pytest -q
 ruff check jarvis tests
 ```
 
+CI runs the suite on Ubuntu (3.10–3.12), Windows (3.11, 3.12) and macOS (3.12).
+
 ## Roadmap
 
+- Cost and token accounting per provider, with budgets
+- Retry with exponential backoff for every network call
+- Encrypted secret storage (system keyring) instead of plain `.env`
+- Retrieval over your own documents (folders, wikis, PDFs)
 - Web UI and a mobile-friendly remote control
 - Streaming tool calls, not just streaming prose
 - Event triggers: run a skill when a file, window or device state changes
-- Cost and token accounting per provider, with budgets
-- Encrypted secret storage instead of plain `.env`
 - Signed builds for Windows and macOS, plus a Docker image for the daemon
-- Retrieval over your own documents (folders, wikis, PDFs)
 - Plugin marketplace for skills
 
 ## License
