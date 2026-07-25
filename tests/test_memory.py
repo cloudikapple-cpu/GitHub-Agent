@@ -22,6 +22,20 @@ def test_char_budget_trims_history():
     assert total <= 200
 
 
+def test_the_trim_note_cannot_eat_the_budget():
+    """The summary is context as well, so it has a ceiling of its own."""
+
+    memory = ConversationMemory("sys", max_messages=100, max_chars=200)
+    for index in range(20):
+        memory.add({"role": "user", "content": "x" * 50 + str(index)})
+
+    summary = memory.summary()
+    assert summary  # something was trimmed, so the note exists
+    assert len(summary) <= memory.summary_budget()
+    # The most recent turn always survives.
+    assert memory.messages()[-1]["content"].endswith("19")
+
+
 def test_trimming_never_starts_with_tool_message():
     memory = ConversationMemory("sys", max_messages=3)
     memory.add({"role": "user", "content": "do it"})
