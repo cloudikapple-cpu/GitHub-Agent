@@ -1,13 +1,10 @@
 """Jarvis — an extensible desktop AI assistant.
 
-Layers:
-
-* ``jarvis.llm``      — pluggable LLM backends (OpenAI-compatible, Anthropic, Ollama).
-* ``jarvis.tools``    — capabilities (web, files, shell, desktop, apps, HTTP integrations).
-* ``jarvis.skills``   — user-defined skills loaded from disk at startup.
-* ``jarvis.security`` — path sandbox, command policy and audit log.
-* ``jarvis.agent``    — the reasoning loop tying an LLM to the tools.
-* ``jarvis.cli`` / ``jarvis.ui`` / ``jarvis.hotkey`` / ``jarvis.voice`` — interfaces.
+Full computer control behind a security policy, any custom API endpoint,
+skills, MCP servers, long-term memory, reminders, voice, a global hotkey and a
+desktop window.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
+
+__all__ = ["__version__"]

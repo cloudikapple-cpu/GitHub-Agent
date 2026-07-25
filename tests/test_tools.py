@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -58,7 +59,12 @@ def test_registry_serialises_non_string_result():
         func=lambda: [1, 2, 3],
     )
     registry = ToolRegistry([tool])
-    assert registry.execute("numbers", {}) == "[1, 2, 3]"
+    result = registry.execute("numbers", {})
+
+    # The registry returns JSON text; the exact indentation is not part of the
+    # contract, so compare the parsed value instead of the raw string.
+    assert isinstance(result, str)
+    assert json.loads(result) == [1, 2, 3]
 
 
 def test_file_tools_roundtrip(tmp_path):

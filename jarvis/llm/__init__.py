@@ -10,6 +10,10 @@ You can also register your own backend class at runtime::
 
     from jarvis.llm import register_backend
     register_backend("my-api", MyBackend)
+
+With ``router.enabled`` the factory returns a :class:`RoutingBackend` that
+tries a local model first and falls back to a cloud endpoint (NVIDIA NIM by
+default).
 """
 
 from __future__ import annotations
@@ -18,13 +22,16 @@ from typing import Callable
 
 from ..config import Config, ProviderConfig
 from .base import LLMBackend, LLMResponse, ToolCall
+from .router import RoutingBackend
 
 __all__ = [
     "LLMBackend",
     "LLMResponse",
+    "RoutingBackend",
     "ToolCall",
     "build_backend",
     "build_backend_from_provider",
+    "build_router",
     "register_backend",
 ]
 
@@ -71,7 +78,31 @@ def build_backend_from_provider(provider: ProviderConfig) -> LLMBackend:
     )
 
 
-def build_backend(config: Config, name: str | None = None) -> LLMBackend:
-    """Instantiate the backend selected in ``config`` (or the named provider)."""
+def build_router(config: Config) -> RoutingBackend:
+    """Build a :class:`RoutingBackend` from ``config.router``."""
 
+    factories: dict[str, Callable[[], LLMBackend]] = {}
+    for name, provider in config.providers.items():
+        factories[name] = (lambda p=provider: build_backend_from_provider(p))
+
+    router = config.router
+    primary = router.primary if router.primary in factories else config.backend
+    return RoutingBackend(
+        factories=factories,
+        primary=primary,
+        fallbacks=[name for name in router.fallbacks if name in factories],
+        heavy=router.heavy if router.heavy in factories else "",
+        escalate_over_chars=router.escalate_over_chars,
+    )
+
+
+def build_backend(config: Config, name: str | None = None) -> LLMBackend:
+    """Instantiate the backend selected in ``config`` (or the named provider).
+
+    When ``router.enabled`` is set and no explicit provider is requested, a
+    routing backend with automatic fallback is returned instead.
+    """
+
+    if name is None and config.router.enabled:
+        return build_router(config)
     return build_backend_from_provider(config.provider(name))

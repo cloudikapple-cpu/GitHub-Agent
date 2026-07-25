@@ -1,0 +1,131 @@
+"""Control Jarvis from Telegram.
+
+A long-polling bot with no extra dependency — just the Bot API over HTTPS.
+Only user ids listed in ``telegram.allowed_user_ids`` are served; everyone else
+is ignored. Because a chat cannot show a confirmation dialog, tools that
+require confirmation are refused unless ``allow_confirmations`` is set.
+
+Each chat keeps its own agent, so the conversation has context between
+messages; ``/reset`` clears it.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, Callable
+
+import requests
+
+LOGGER = logging.getLogger(__name__)
+API_ROOT = "https://api.telegram.org"
+MAX_MESSAGE_CHARS = 3800
+HELP_TEXT = (
+    "Jarvis is listening. Send any task in plain language.\n"
+    "/reset — forget this conversation."
+)
+
+
+class TelegramBot:
+    """Minimal long-polling Telegram front end."""
+
+    def __init__(self, config, agent_factory: Callable[[Callable[[str, dict], bool]], Any]) -> None:
+        self.config = config.telegram
+        self.agent_factory = agent_factory
+        self.offset = 0
+        self._stop = False
+        self._agents: dict[int | str, Any] = {}
+
+    # ------------------------------------------------------------------
+    def validate(self) -> None:
+        """Raise ValueError when the bot is not safe to start."""
+
+        if not self.config.token:
+            raise ValueError("set telegram.token (or TELEGRAM_BOT_TOKEN) first")
+        if not self.config.allowed_user_ids:
+            raise ValueError(
+                "set telegram.allowed_user_ids — an open bot would give strangers "
+                "control of your computer"
+            )
+
+    def endpoint(self, method: str) -> str:
+        return f"{API_ROOT}/bot{self.config.token}/{method}"
+
+    def _call(self, method: str, **payload: Any) -> dict[str, Any]:
+        response = requests.post(self.endpoint(method), json=payload, timeout=70)
+        response.raise_for_status()
+        return response.json()
+
+    def send(self, chat_id: int | str, text: str) -> None:
+        text = text or "(empty)"
+        for start in range(0, len(text), MAX_MESSAGE_CHARS):
+            try:
+                self._call(
+                    "sendMessage", chat_id=chat_id, text=text[start : start + MAX_MESSAGE_CHARS]
+                )
+            except requests.RequestException as exc:
+                LOGGER.warning("Telegram send failed: %s", exc)
+                return
+
+    def allowed(self, user_id: int | str) -> bool:
+        return str(user_id) in {str(item) for item in self.config.allowed_user_ids}
+
+    # ------------------------------------------------------------------
+    def _confirm_hook(self, tool_name: str, arguments: dict) -> bool:
+        return bool(self.config.allow_confirmations)
+
+    def agent_for(self, chat_id: int | str) -> Any:
+        """One agent per chat, so the conversation keeps its context."""
+
+        if chat_id not in self._agents:
+            self._agents[chat_id] = self.agent_factory(self._confirm_hook)
+        return self._agents[chat_id]
+
+    def handle(self, message: dict[str, Any]) -> None:
+        chat_id = (message.get("chat") or {}).get("id")
+        user_id = (message.get("from") or {}).get("id")
+        text = (message.get("text") or "").strip()
+        if not chat_id or not text:
+            return
+        if not self.allowed(user_id):
+            LOGGER.warning("Ignoring Telegram user %s", user_id)
+            return
+        if text in {"/start", "/help"}:
+            self.send(chat_id, HELP_TEXT)
+            return
+        if text == "/reset":
+            self._agents.pop(chat_id, None)
+            self.send(chat_id, "Conversation cleared.")
+            return
+
+        try:
+            reply = self.agent_for(chat_id).run(text)
+        except Exception as exc:  # noqa: BLE001 - report the failure to the chat
+            LOGGER.exception("Telegram run failed")
+            reply = f"Error: {exc}"
+        self.send(chat_id, reply)
+
+    # ------------------------------------------------------------------
+    def poll_once(self, timeout: int = 30) -> int:
+        try:
+            data = self._call("getUpdates", offset=self.offset, timeout=timeout)
+        except requests.RequestException as exc:
+            LOGGER.warning("Telegram polling failed: %s", exc)
+            time.sleep(5)
+            return 0
+        updates = data.get("result") or []
+        for update in updates:
+            self.offset = int(update.get("update_id", 0)) + 1
+            message = update.get("message") or update.get("edited_message")
+            if message:
+                self.handle(message)
+        return len(updates)
+
+    def run(self) -> None:
+        self.validate()
+        LOGGER.info("Telegram bot started.")
+        while not self._stop:
+            self.poll_once()
+
+    def stop(self) -> None:
+        self._stop = True

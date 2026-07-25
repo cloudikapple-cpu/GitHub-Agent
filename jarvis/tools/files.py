@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import fnmatch
 import shutil
-from pathlib import Path
 
 from ..security import SecurityError, SecurityPolicy
 from .base import Tool

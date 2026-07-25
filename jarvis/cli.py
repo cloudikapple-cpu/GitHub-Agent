@@ -1,4 +1,4 @@
-"""Command line interface: one-shot, REPL, GUI and daemon modes."""
+"""Command line interface: one-shot, REPL, GUI, daemon and Telegram modes."""
 
 from __future__ import annotations
 
@@ -60,24 +60,38 @@ def _make_event_hook(verbose: bool):
     return hook
 
 
-def build_agent(args: argparse.Namespace) -> tuple[Agent, Config]:
-    config = Config.load(args.config)
+def apply_overrides(config: Config, args: argparse.Namespace) -> Config:
+    """Apply command-line overrides to a loaded config."""
+
     if args.backend:
         config.backend = args.backend
+        config.router.enabled = False
     if args.model:
         config.provider().model = args.model
     if args.api_base:
         config.provider().base_url = args.api_base
     if args.api_key:
         config.provider().api_key = args.api_key
+    if args.router:
+        config.router.enabled = True
+    if args.no_router:
+        config.router.enabled = False
     if args.no_confirm:
         config.require_confirmation = False
     if args.yolo:
         config.require_confirmation = False
         config.allow_app_management = True
+    if args.dry_run:
+        config.dry_run = True
     if args.voice:
         config.voice.enabled = True
+    if args.sandbox:
+        config.execution_sandbox.mode = args.sandbox
+    return config
 
+
+def build_agent(args: argparse.Namespace) -> tuple[Agent, Config]:
+    config = apply_overrides(Config.load(args.config), args)
     agent = Agent.from_config(
         config,
         confirm_hook=_confirm,
@@ -119,7 +133,12 @@ def run_repl(agent: Agent, voice=None) -> int:
             _print(agent.tools.describe())
             continue
 
-        reply = agent.run(user_input)
+        try:
+            reply = agent.run(user_input)
+        except KeyboardInterrupt:
+            agent.cancel()
+            _print("Interrupted.", style="dim")
+            continue
         _print_markdown(reply)
         if voice is not None and voice.config.speak_replies:
             voice.speak(reply)
@@ -134,11 +153,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-b",
         "--backend",
-        help="Provider name from your config (openai, anthropic, ollama, or a custom one).",
+        help="Provider name from your config (openai, anthropic, ollama, nim, or a custom one).",
     )
     parser.add_argument("--model", help="Override the model for this run.")
     parser.add_argument("--api-base", help="Override the API base URL (any OpenAI-compatible API).")
     parser.add_argument("--api-key", help="Override the API key for this run.")
+    parser.add_argument(
+        "--router",
+        action="store_true",
+        help="Enable provider routing (local model first, cloud fallback).",
+    )
+    parser.add_argument("--no-router", action="store_true", help="Disable provider routing.")
     parser.add_argument("-c", "--config", default="config.yaml", help="Path to the config file.")
     parser.add_argument("--no-confirm", action="store_true", help="Do not ask before risky actions.")
     parser.add_argument(
@@ -146,12 +171,30 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="No confirmations and app management enabled. Use at your own risk.",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Plan only: print the actions that would be taken, run nothing.",
+    )
+    parser.add_argument(
+        "--sandbox",
+        choices=["none", "docker", "firejail"],
+        help="Run shell commands and code inside an isolated sandbox.",
+    )
     parser.add_argument("--voice", action="store_true", help="Use the microphone for input.")
     parser.add_argument("--gui", action="store_true", help="Open the desktop window.")
     parser.add_argument(
         "--daemon",
         action="store_true",
-        help="Run in the background and listen for the global hotkey.",
+        help="Run in the background with hotkeys, tray icon and reminders.",
+    )
+    parser.add_argument(
+        "--telegram", action="store_true", help="Run the Telegram bot in the foreground."
+    )
+    parser.add_argument(
+        "--autostart",
+        choices=["install", "remove", "status"],
+        help="Manage starting the daemon at login.",
     )
     parser.add_argument("--list-tools", action="store_true", help="Print available tools and exit.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show tool calls and results.")
@@ -161,15 +204,37 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.autostart:
+        from . import autostart
+
+        action = {
+            "install": autostart.install,
+            "remove": autostart.uninstall,
+            "status": autostart.status,
+        }[args.autostart]
+        _print(action())
+        return 0
+
     if args.daemon:
         from .daemon import run_daemon
 
-        config = Config.load(args.config)
-        if args.backend:
-            config.backend = args.backend
-        if args.voice:
-            config.voice.enabled = True
-        return run_daemon(config)
+        return run_daemon(apply_overrides(Config.load(args.config), args))
+
+    if args.telegram:
+        from .telegram_bot import TelegramBot
+
+        config = apply_overrides(Config.load(args.config), args)
+        config.telegram.enabled = True
+
+        def telegram_agent(confirm_hook):
+            return Agent.from_config(config, confirm_hook=confirm_hook, persist_memory=False)
+
+        try:
+            TelegramBot(config, telegram_agent).run()
+        except ValueError as exc:
+            _print(f"Telegram error: {exc}", style="red")
+            return 1
+        return 0
 
     try:
         agent, config = build_agent(args)
