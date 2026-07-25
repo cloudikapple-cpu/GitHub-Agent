@@ -95,6 +95,11 @@ function ready() {
   current = null;
 }
 
+fetch("/api/history?token=" + encodeURIComponent(token))
+  .then((response) => response.ok ? response.json() : { history: [] })
+  .then((data) => (data.history || []).forEach((item) => bubble(item.role, item.text)))
+  .catch(() => {});
+
 const events = new EventSource("/events?token=" + encodeURIComponent(token));
 events.onopen = () => { statusLabel.textContent = "connected"; };
 events.onerror = () => { statusLabel.textContent = "disconnected"; };
@@ -147,6 +152,17 @@ input.addEventListener("keydown", (event) => {
 </body>
 </html>
 """
+
+
+def build_url(host: str, port: int, token: str) -> str:
+    """Return the address to open in a browser.
+
+    A server bound to every interface is still reached through loopback from
+    the machine it runs on, so ``0.0.0.0`` is printed as ``127.0.0.1``.
+    """
+
+    shown = "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
+    return "http://" + shown + ":" + str(port) + "/?token=" + token
 
 
 class WebServer:
@@ -250,8 +266,7 @@ class WebServer:
     # -- lifecycle ------------------------------------------------------
     @property
     def url(self) -> str:
-        host = "127.0.0.1" if self.host in {"", "0.0.0.0"} else self.host
-        return f"http://{host}:{self.port}/?token={self.token}"
+        return build_url(self.host, self.port, self.token)
 
     def start(self) -> str:
         """Start serving in the background and return the URL to open."""
@@ -259,6 +274,7 @@ class WebServer:
         handler = _make_handler(self)
         self._server = ThreadingHTTPServer((self.host, self.port), handler)
         self._server.daemon_threads = True
+        # Port 0 means 'any free port'; report the one that was actually taken.
         self.port = int(self._server.server_address[1])
         self._thread = threading.Thread(
             target=self._server.serve_forever, name="jarvis-web", daemon=True
@@ -351,6 +367,7 @@ def _make_handler(server: WebServer) -> type[BaseHTTPRequestHandler]:
             route = parsed.path
 
             if route in {"/", "/index.html"}:
+                # The page itself carries no data; the token guards the API.
                 self._send(200, INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
                 return
             if route == "/favicon.ico":
@@ -412,7 +429,7 @@ def serve(agent: Any, config: Any = None, open_browser: bool = False) -> WebServ
     web = getattr(config, "web", None)
     server = WebServer(
         agent,
-        host=getattr(web, "host", DEFAULT_HOST),
+        host=str(getattr(web, "host", DEFAULT_HOST)),
         port=int(getattr(web, "port", DEFAULT_PORT)),
         token=str(getattr(web, "token", "") or ""),
         stream=bool(getattr(getattr(config, "interface", None), "stream", True)),
