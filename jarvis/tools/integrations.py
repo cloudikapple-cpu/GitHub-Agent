@@ -25,6 +25,7 @@ from typing import Any
 
 import requests
 
+from ..clipboard import ClipboardHistory, ClipboardUnavailable, read_clipboard, write_clipboard
 from ..security import SecurityError, SecurityPolicy
 from .base import Tool
 
@@ -142,42 +143,78 @@ class ListIntegrationsTool(Tool):
 
 class ClipboardTool(Tool):
     name = "clipboard"
-    description = "Read the system clipboard, or copy text into it."
+    description = (
+        "Read the system clipboard, copy text into it, or look through what was copied "
+        "earlier. Use action='history' to recover something that has since been overwritten."
+    )
     parameters = {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["get", "set"], "default": "get"},
+            "action": {
+                "type": "string",
+                "enum": ["get", "set", "history", "clear_history"],
+                "default": "get",
+            },
             "text": {"type": "string", "description": "Text to copy when action is 'set'."},
+            "limit": {
+                "type": "integer",
+                "description": "How many history items to show (default 10).",
+                "default": 10,
+            },
         },
     }
 
-    def run(self, action: str = "get", text: str = "") -> str:
-        try:
-            import pyperclip
-        except ImportError:
-            return "Clipboard access requires the 'pyperclip' package."
+    def __init__(self, history: ClipboardHistory | None = None):
+        self.history = history or ClipboardHistory()
+
+    def run(self, action: str = "get", text: str = "", limit: int = 10) -> str:
+        if action == "history":
+            return self.history.format(limit)
+        if action == "clear_history":
+            return f"Forgot {self.history.clear()} clipboard items."
+
         try:
             if action == "set":
-                pyperclip.copy(text)
+                write_clipboard(text)
+                self.history.record(text)
                 return f"Copied {len(text)} characters to the clipboard."
-            return pyperclip.paste() or "(clipboard is empty)"
-        except Exception as exc:  # noqa: BLE001 - clipboard backends vary wildly
+            current = read_clipboard()
+        except ClipboardUnavailable as exc:
             return f"Clipboard error: {exc}"
+
+        # Reading is also a chance to remember, so history works without the daemon.
+        self.history.record(current)
+        return current or "(clipboard is empty)"
 
 
 class NotifyTool(Tool):
     name = "notify"
-    description = "Show a desktop notification to the user."
+    description = (
+        "Show a desktop notification to the user. On Windows this is a real toast and may "
+        "carry buttons: pass action_label plus action_uri to add one."
+    )
     parameters = {
         "type": "object",
         "properties": {
             "title": {"type": "string", "description": "Notification title.", "default": "Jarvis"},
             "message": {"type": "string", "description": "Notification body."},
+            "action_label": {"type": "string", "description": "Optional button caption."},
+            "action_uri": {
+                "type": "string",
+                "description": "What the button opens: a URL, or a file:// path.",
+            },
         },
         "required": ["message"],
     }
 
-    def run(self, message: str, title: str = "Jarvis") -> str:
+    def run(
+        self,
+        message: str,
+        title: str = "Jarvis",
+        action_label: str = "",
+        action_uri: str = "",
+    ) -> str:
         from ..notifications import notify
 
-        return notify(title, message)
+        actions = [(action_label, action_uri)] if action_label and action_uri else None
+        return notify(title, message, actions)
