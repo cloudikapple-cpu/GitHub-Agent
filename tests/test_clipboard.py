@@ -74,24 +74,30 @@ def test_formatting_an_empty_history_says_so(history):
 
 
 # ------------------------------------------------------------------- the tool
-def test_the_tool_reads_writes_and_recalls(monkeypatch, history):
+@pytest.fixture()
+def fake_clipboard(monkeypatch):
     box = {"text": "copied earlier"}
     monkeypatch.setattr(clipboard_module, "read_clipboard", lambda: box["text"])
-    monkeypatch.setattr(
-        "jarvis.tools.integrations.read_clipboard", lambda: box["text"]
-    )
+    monkeypatch.setattr("jarvis.tools.integrations.read_clipboard", lambda: box["text"])
     monkeypatch.setattr(
         "jarvis.tools.integrations.write_clipboard", lambda text: box.update(text=text)
     )
+    return box
 
+
+def test_the_tool_reads_writes_and_recalls(fake_clipboard, history):
     tool = ClipboardTool(history)
+
     assert tool.run() == "copied earlier"
-    assert "12 characters" in tool.run(action="set", text="replacement")[:20] or True
-    tool.run(action="set", text="replacement")
+    assert tool.run(action="set", text="replacement") == "Copied 11 characters to the clipboard."
+    assert fake_clipboard["text"] == "replacement"
+
     listing = tool.run(action="history")
     assert "replacement" in listing
     assert "copied earlier" in listing
-    assert "Forgot 2" in tool.run(action="clear_history")
+
+    assert tool.run(action="clear_history") == "Forgot 2 clipboard items."
+    assert "empty" in tool.run(action="history")
 
 
 def test_the_tool_explains_a_missing_backend(monkeypatch, history):
