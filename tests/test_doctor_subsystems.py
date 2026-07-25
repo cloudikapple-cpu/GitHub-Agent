@@ -125,10 +125,9 @@ def test_groq_voice_with_a_key_needs_no_local_whisper(monkeypatch):
 
 
 def test_the_full_report_stays_readable():
-    config = Config()
-    config.providers["openai"].api_key = "sk-test"
-
-    report = doctor.format_report(doctor.diagnose(config, probe=False))
+    # A bare Config has no providers, which is itself a reported problem; the
+    # point here is that the new checks appear and the report still renders.
+    report = doctor.format_report(doctor.diagnose(Config(), probe=False))
 
     assert "reply cache" in report
     assert "keychain" in report
