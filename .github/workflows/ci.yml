@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   lint:
     name: lint
@@ -57,5 +61,34 @@ jobs:
           pip install -e .
           pip install pytest pytest-cov
 
+      # The log is kept so a failure can be read without opening the web UI:
+      # it is attached as an artifact and, on a pull request, posted as a
+      # comment. Chasing a red run through six jobs is otherwise a chore.
       - name: Test
-        run: pytest -q --cov=jarvis --cov-report=term-missing
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q -rf --cov=jarvis --cov-report=term-missing 2>&1 | tee pytest.log
+
+      - name: Upload the test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log-${{ matrix.os }}-${{ matrix.python-version }}
+          path: pytest.log
+          if-no-files-found: ignore
+
+      - name: Report the failure on the pull request
+        if: failure() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### Test failure: ${{ matrix.os }} / Python ${{ matrix.python-version }}"
+            echo
+            echo '```'
+            tail -n 60 pytest.log || echo "no log captured"
+            echo '```'
+          } > comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md || true
