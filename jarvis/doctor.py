@@ -31,6 +31,8 @@ FAIL = "fail"
 
 _MARKS = {OK: "[ ok ]", WARN: "[warn]", FAIL: "[fail]"}
 
+#: The oldest interpreter the package supports (see pyproject.toml).
+MIN_PYTHON = (3, 10)
 #: Packages behind the desktop control tools.
 DESKTOP_MODULES = ("pyautogui", "pyperclip", "psutil", "PIL")
 #: Packages behind speech in and speech out.
@@ -88,12 +90,13 @@ def _port_open(url: str, timeout: float = 1.0) -> bool:
 def check_python() -> Check:
     version = platform.python_version()
     system = f"{platform.system()} {platform.release()}".strip()
-    if sys.version_info < (3, 10):
+    required = ".".join(str(part) for part in MIN_PYTHON)
+    if tuple(sys.version_info[:2]) < MIN_PYTHON:
         return Check(
             "python",
             FAIL,
-            f"{version} is too old",
-            "install Python 3.10 or newer and recreate the virtual environment",
+            f"{version} is too old; {required} or newer is required",
+            f"install Python {required}+ and recreate the virtual environment",
         )
     return Check("python", OK, f"{version} on {system}")
 
