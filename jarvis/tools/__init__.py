@@ -22,6 +22,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ..clipboard import ClipboardHistory
 from ..journal import Journal
 from ..sandbox import Sandbox
 from .apps import (
@@ -45,6 +46,7 @@ from .files import (
     WriteFileTool,
 )
 from .integrations import ClipboardTool, HttpRequestTool, ListIntegrationsTool, NotifyTool
+from .powershell import PowerShellTool
 from .shell import PythonExecTool, ShellTool
 from .undo import HistoryTool, UndoTool
 from .web import WebFetchTool, WebSearchTool
@@ -84,11 +86,14 @@ def build_default_registry(
     sandbox = Sandbox(config.execution_sandbox)
     # One journal for every destructive tool, so undo_last sees them all.
     journal = Journal()
+    # One clipboard history shared by the tool and the daemon's watcher.
+    clipboard = ClipboardHistory()
     registry = ToolRegistry()
     registry.knowledge = None
     registry.scheduler = None
     registry.sandbox = sandbox
     registry.journal = journal
+    registry.clipboard = clipboard
 
     for tool in _tag([WebSearchTool(config.search), WebFetchTool(config.search)], "web"):
         registry.register(tool)
@@ -113,6 +118,7 @@ def build_default_registry(
     for tool in _tag(
         [
             ShellTool(allow=config.allow_shell, policy=policy, sandbox=sandbox),
+            PowerShellTool(allow=config.allow_shell, policy=policy),
             PythonExecTool(policy, sandbox=sandbox),
         ],
         "system",
@@ -150,7 +156,7 @@ def build_default_registry(
         [
             HttpRequestTool(config.integrations, policy),
             ListIntegrationsTool(config.integrations),
-            ClipboardTool(),
+            ClipboardTool(clipboard),
             NotifyTool(),
         ],
         "integrations",

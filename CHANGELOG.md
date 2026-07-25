@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- **`run_powershell`** (`jarvis/tools/powershell.py`). `run_shell` only reaches
+  `cmd.exe` on Windows, which leaves out services, the registry, scheduled
+  tasks, winget queries and every cmdlet returning objects. The new tool runs
+  scripts with `-NoProfile` and `-EncodedCommand`, behind the same
+  `SecurityPolicy` gate as the shell.
+- **Windows 11 toasts with buttons** (`jarvis/windows.py`). Notifications go
+  through the WinRT notification manager, so they land in the Notification
+  Centre and can offer an action such as 'Open the folder'. The deprecated tray
+  balloon is kept only as a fallback.
+- **Clipboard history** (`jarvis/clipboard.py`). A 50-item ring buffer in
+  `~/.jarvis/clipboard.json`, filled by the daemon and by the `clipboard` tool
+  itself, with `history` and `clear_history` actions.
+- **Hotkey conflict detection**. The daemon asks Windows whether a shortcut is
+  already owned by another application and says so, instead of starting a
+  listener that will never fire.
+- **Windows control guide** (`docs/windows-control.md`).
+- Tests for the Windows helpers, the PowerShell tool, the clipboard history and
+  the new autostart (119 → 151 tests).
+
+### Changed
+
+- **Autostart on Windows is a Task Scheduler logon task**, not a Startup
+  shortcut: no console window (`pythonw.exe`), a 30-second delay so Explorer is
+  ready before the hotkey is claimed, three automatic restarts after a crash,
+  and immunity to the Startup tab's 'Disable' switch. If `schtasks` refuses,
+  the Startup shortcut is written as a fallback and the reason is reported.
+- **Notification arguments can no longer break the command.** Titles and bodies
+  used to be interpolated into a PowerShell string, so an apostrophe in a
+  reminder broke it; every string is now passed base64-encoded.
+
 ## 0.3.2
 
 ### Added

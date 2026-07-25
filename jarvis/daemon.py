@@ -8,6 +8,9 @@ Run it with ``jarvis --daemon``. It stays resident and reacts to:
 * due reminders and tasks    - notifications, or unattended agent runs;
 * Telegram messages          - when the bot is enabled.
 
+While it runs it also keeps a short clipboard history, so 'what did I copy
+before this?' has an answer.
+
 Only one daemon may run at a time: a second one would duplicate every reminder
 and fight over the global hotkey, so startup is guarded by a PID lock.
 """
@@ -20,6 +23,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from .agent import Agent
+from .clipboard import ClipboardWatcher
 from .config import Config
 from .hotkey import HotkeyManager
 from .notifications import notify
@@ -95,6 +99,10 @@ def _run(config: Config) -> int:
     if voice is not None and config.interface.voice_hotkey:
         hotkeys.register(config.interface.voice_hotkey, open_and_listen)
 
+    # Ask the OS before starting: a shortcut owned by another application would
+    # register without error and then simply never fire.
+    taken = hotkeys.conflicts()
+
     try:
         backend = hotkeys.start()
         hint = f"Hotkeys active via {backend}: {config.interface.hotkey}"
@@ -102,6 +110,18 @@ def _run(config: Config) -> int:
             hint += f", voice: {config.interface.voice_hotkey}"
     except RuntimeError as exc:
         hint = f"Hotkeys unavailable ({exc})"
+
+    if taken:
+        hint += (
+            "; already owned by another application: "
+            + ", ".join(taken)
+            + " - change interface.hotkey in config.yaml or JARVIS_HOTKEY"
+        )
+
+    # -- clipboard history ---------------------------------------------
+    clipboard = ClipboardWatcher(getattr(agent.tools, "clipboard", None))
+    if clipboard.start():
+        hint += ", clipboard history on"
 
     # -- reminders and scheduled tasks ---------------------------------
     scheduler = agent.scheduler
@@ -174,6 +194,7 @@ def _run(config: Config) -> int:
         window.run()
     finally:
         hotkeys.stop()
+        clipboard.stop()
         if scheduler is not None:
             scheduler.stop()
         if bot is not None:

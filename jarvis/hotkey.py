@@ -1,21 +1,28 @@
-"""Global hotkeys — summon Jarvis from anywhere in the OS.
+"""Global hotkeys - summon Jarvis from anywhere in the OS.
 
 Two backends are tried in order:
 
-1. ``pynput`` — cross-platform, no admin rights on Windows/macOS*;
-2. ``keyboard`` — Windows-friendly, needs root on Linux.
+1. ``pynput`` - cross-platform, no admin rights on Windows/macOS*;
+2. ``keyboard`` - Windows-friendly, needs root on Linux.
 
 \\* macOS requires granting Accessibility + Input Monitoring permission to the
 terminal or app running Jarvis (System Settings -> Privacy & Security).
 
 Hotkeys are written in the familiar ``ctrl+alt+space`` form and translated to
 the backend syntax automatically.
+
+Both backends fail silently when another application already owns a shortcut:
+the listener starts, the key does nothing, and there is no way to tell from the
+logs. :meth:`HotkeyManager.conflicts` asks Windows directly before starting, so
+the daemon can report the clash instead of looking broken.
 """
 
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from collections.abc import Callable
+
+from . import windows
 
 _SPECIAL = {
     "ctrl": "<ctrl>",
@@ -61,6 +68,19 @@ class HotkeyManager:
         self._bindings[combo] = callback
 
     # ------------------------------------------------------------------
+    def conflicts(self) -> list[str]:
+        """Registered combinations that another application already owns.
+
+        Empty on platforms where the question cannot be answered, so callers
+        can treat 'no conflicts' and 'unknown' the same way.
+        """
+
+        taken = []
+        for combo in self._bindings:
+            if windows.hotkey_available(combo) is False:
+                taken.append(combo)
+        return taken
+
     def _dispatch(self, callback: Callable[[], None]) -> None:
         # Never block the OS keyboard hook.
         threading.Thread(target=callback, daemon=True).start()
