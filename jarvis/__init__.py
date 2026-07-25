@@ -5,6 +5,6 @@ skills, MCP servers, long-term memory, reminders, voice, a global hotkey and a
 desktop window.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = ["__version__"]

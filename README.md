@@ -11,8 +11,10 @@ you> remind me every day at 09:00 to review the inbox
 you> посмотри на экран и скажи, что за ошибка в терминале
 ```
 
-On Windows 11? Follow [docs/windows-11.md](docs/windows-11.md) — install, hotkeys,
-autostart, winget and antivirus notes in one place.
+On Windows 11? Follow [docs/windows-11.md](docs/windows-11.md) for install,
+hotkeys, winget and antivirus notes, and
+[docs/windows-control.md](docs/windows-control.md) for PowerShell, toasts,
+clipboard history and the Task Scheduler autostart.
 
 ## What it can do
 
@@ -22,9 +24,10 @@ autostart, winget and antivirus notes in one place.
 | Files | read, write, append, list, `make_directory`, `delete_path`, `move_path`, `copy_path`, `find_files` (with content search) |
 | Undo | `undo_last`, `list_recent_changes` — deletes go to a trash folder, overwrites are backed up |
 | Code | `write_file` + `run_python` + `run_shell` — write code, run it, read the output, iterate; optionally inside Docker/Firejail |
+| Windows | `run_powershell` — services, the registry, scheduled tasks, winget queries and any cmdlet, run with `-NoProfile -EncodedCommand` |
 | Apps | `install_app` / `uninstall_app` (winget, choco, scoop, brew, apt, dnf, pacman, zypper, snap, flatpak), `list_installed_apps` |
 | System | `list_processes`, `kill_process`, `system_info` |
-| Desktop | `open_path`, `take_screenshot`, `type_text`, `press_hotkey`, `clipboard`, `notify` |
+| Desktop | `open_path`, `take_screenshot`, `type_text`, `press_hotkey`, `clipboard` (get / set / history / clear_history), `notify` (Windows 11 toasts with buttons) |
 | Vision | `see_screen`, `look_at_image` — the assistant looks at your screen with a vision model |
 | Memory | `remember`, `recall`, `forget` — durable notes in a local vector store, recalled automatically |
 | Reminders | `remind_me`, `schedule_task`, `list_jobs`, `cancel_job` — one-shot, interval or daily |
@@ -55,16 +58,19 @@ jarvis                          # interactive terminal
 jarvis -m "summarise my notes"  # one-shot
 jarvis --gui                    # desktop window (text + microphone)
 jarvis --voice                  # speak your requests
-jarvis --daemon                 # background: hotkey, tray, reminders, Telegram
+jarvis --daemon                 # background: hotkey, tray, reminders, clipboard history
 jarvis --telegram               # only the Telegram bot
 jarvis --profile safe           # read-only mode (safe | dev | yolo)
-jarvis --stream                 # print the answer as it is generated
+jarvis --stream                 # print the answer as it is generated (terminal and window)
+jarvis --usage                  # what today's model calls cost (or: --usage 2026-07-01)
 jarvis --dry-run -m "clean up Downloads"   # plan the actions, run nothing
 jarvis --sandbox docker -m "benchmark this script"
 jarvis --autostart install      # start with the system (install | remove | status)
 jarvis --list-tools             # what it can do right now
 jarvis -v                       # show every tool call and result
 ```
+
+Inside the REPL: `tools`, `undo`, `usage`, `reset`, `exit`.
 
 ### Global hotkey and tray
 
@@ -73,9 +79,37 @@ With `jarvis --daemon` running, press:
 - **Ctrl+Alt+Space** — open the window with the cursor in the input field;
 - **Ctrl+Alt+V** — open it and start recording your voice immediately.
 
-Both are configurable (`interface.hotkey`, `interface.voice_hotkey`). The tray
-icon offers the same actions plus Quit. macOS needs Input Monitoring permission
-for the terminal/app running Jarvis.
+Both are configurable (`interface.hotkey`, `interface.voice_hotkey`). If another
+application already owns a shortcut, the daemon says so at startup instead of
+starting a listener that never fires. The tray icon offers the same actions plus
+Quit. macOS needs Input Monitoring permission for the terminal/app running
+Jarvis.
+
+### Windows 11 control
+
+- Autostart is a **Task Scheduler logon task**: no console flash (`pythonw.exe`),
+  a 30-second delay, three restarts after a crash, and the Startup tab cannot
+  switch it off. `jarvis --autostart status` reports what is installed.
+- Notifications are **WinRT toasts** that land in the Notification Centre and can
+  carry a button ("Open the folder").
+- `run_powershell` reaches everything `cmd.exe` cannot; it needs confirmation and
+  obeys `JARVIS_ALLOW_SHELL`, the command deny-list and the audit log.
+- The daemon keeps the last 50 clipboard entries in `~/.jarvis/clipboard.json`:
+  *"what did I copy before this?"*
+
+## Cost control
+
+Every model call is metered per provider and per day in `~/.jarvis/usage.json`:
+
+```bash
+jarvis --usage
+#   openai: 14 calls, 82k in / 9k out tokens, $0.0181
+#   total: $0.0181
+
+JARVIS_BUDGET_DAILY_USD=2      # warn at 80%, refuse paid calls at 100%
+```
+
+Local providers (Ollama, LM Studio, llama.cpp) are always counted as free.
 
 ## Internet through Tavily
 
@@ -311,6 +345,9 @@ jarvis/
   security.py      path sandbox, command deny-list, audit log
   journal.py       undo journal: trash, backups, reversible operations
   sandbox.py       docker / firejail execution
+  retry.py         exponential backoff for every outbound HTTP call
+  budget.py        token and spend accounting, daily limits
+  singleton.py     one daemon at a time (PID lock)
   memory.py        conversation history, persistence, context budget
   knowledge.py     long-term semantic memory (SQLite + embeddings)
   scheduler.py     reminders and unattended tasks
@@ -318,20 +355,24 @@ jarvis/
   vision.py        screenshots and image understanding
   skills.py        loads user skills (.py and .yaml)
   voice.py         speech-to-text and text-to-speech
-  hotkey.py        global shortcuts (pynput / keyboard)
-  ui.py            Tkinter window with text + microphone
+  hotkey.py        global shortcuts (pynput / keyboard) + conflict probing
+  windows.py       Windows 11: encoded PowerShell, toasts, Task Scheduler
+  clipboard.py     clipboard history ring buffer and watcher
+  ui.py            Tkinter window with text, microphone and streaming replies
   tray.py          system tray icon
   telegram_bot.py  Telegram front end
-  autostart.py     login item for Windows / macOS / Linux
+  autostart.py     login item: Task Scheduler on Windows, launchd, .desktop
   daemon.py        background process tying it all together
-  cli.py           command line interface, permission profiles, streaming
+  cli.py           command line interface, permission profiles, streaming, usage
   llm/             openai (any compatible API), anthropic, ollama, router
-  tools/           web, files, undo, shell, apps, desktop, integrations,
-                   memory, scheduler, vision, delegation
+  tools/           web, files, undo, shell, powershell, apps, desktop,
+                   integrations, memory, scheduler, vision, delegation
 ```
 
 Guides: [Windows 11](docs/windows-11.md) ·
-[autonomy features](docs/v0.3-autonomy.md) · [changelog](CHANGELOG.md).
+[Windows control](docs/windows-control.md) ·
+[autonomy features](docs/v0.3-autonomy.md) ·
+[reliability](docs/reliability.md) · [changelog](CHANGELOG.md).
 
 ## Development
 
@@ -342,13 +383,14 @@ ruff check jarvis tests
 ```
 
 CI runs the suite on Ubuntu (3.10–3.12), Windows (3.11, 3.12) and macOS (3.12).
+Every push to `main` publishes a release from the matching `CHANGELOG.md`
+section.
 
 ## Roadmap
 
-- Cost and token accounting per provider, with budgets
-- Retry with exponential backoff for every network call
 - Encrypted secret storage (system keyring) instead of plain `.env`
 - Retrieval over your own documents (folders, wikis, PDFs)
+- UI Automation on Windows (`pywinauto`): click real buttons, not coordinates
 - Web UI and a mobile-friendly remote control
 - Streaming tool calls, not just streaming prose
 - Event triggers: run a skill when a file, window or device state changes

@@ -4,6 +4,10 @@ Built on Tkinter (bundled with Python), so there is no extra dependency for the
 GUI itself. The window shows the conversation, a text entry, a microphone
 button, and a live trace of the tools the agent runs.
 
+With ``stream=True`` the reply appears word by word instead of arriving in one
+block after a long silence - the same setting the terminal uses
+(``interface.stream``).
+
 Called from the daemon when the global hotkey fires, or directly with
 ``jarvis --gui``.
 """
@@ -12,7 +16,8 @@ from __future__ import annotations
 
 import queue
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 try:  # Tkinter is optional on some Linux distributions
     import tkinter as tk
@@ -26,13 +31,14 @@ except ImportError:  # pragma: no cover
 class AssistantWindow:
     """Chat window with text + voice input."""
 
-    def __init__(self, agent, voice=None, title: str = "Jarvis"):
+    def __init__(self, agent, voice=None, title: str = "Jarvis", stream: bool = False):
         if not TK_AVAILABLE:
             raise RuntimeError(
                 "Tkinter is not available. On Debian/Ubuntu install 'python3-tk'."
             )
         self.agent = agent
         self.voice = voice
+        self.stream = bool(stream)
         self._events: queue.Queue[tuple[str, str]] = queue.Queue()
         self._busy = False
 
@@ -78,6 +84,14 @@ class AssistantWindow:
         self.transcript.see("end")
         self.transcript.configure(state="disabled")
 
+    def _append_delta(self, text: str) -> None:
+        """Append a streamed fragment without starting a new line."""
+
+        self.transcript.configure(state="normal")
+        self.transcript.insert("end", text, "assistant")
+        self.transcript.see("end")
+        self.transcript.configure(state="disabled")
+
     def push_event(self, kind: str, text: str) -> None:
         """Thread-safe way for worker threads to write to the window."""
 
@@ -91,6 +105,8 @@ class AssistantWindow:
                 break
             if kind == "status":
                 self.status.configure(text=text)
+            elif kind == "delta":
+                self._append_delta(text)
             else:
                 self._append(text, kind)
         self.root.after(100, self._drain_events)
@@ -114,10 +130,24 @@ class AssistantWindow:
         self.push_event("status", "Thinking…")
         threading.Thread(target=self._work, args=(message,), daemon=True).start()
 
+    def _stream_reply(self, message: str) -> str:
+        """Render the answer as it is generated. Returns the full text."""
+
+        chunks: list[str] = []
+        self.push_event("delta", "Jarvis: ")
+        for chunk in self.agent.stream(message):
+            chunks.append(chunk)
+            self.push_event("delta", chunk)
+        self.push_event("delta", "\n")
+        return "".join(chunks)
+
     def _work(self, message: str) -> None:
         try:
-            reply = self.agent.run(message)
-            self.push_event("assistant", f"Jarvis: {reply}")
+            if self.stream:
+                reply = self._stream_reply(message)
+            else:
+                reply = self.agent.run(message)
+                self.push_event("assistant", f"Jarvis: {reply}")
             if self.voice is not None and getattr(self.voice.config, "speak_replies", False):
                 self.voice.speak(reply)
         except Exception as exc:  # noqa: BLE001 - surface errors in the UI
@@ -171,8 +201,13 @@ class AssistantWindow:
         self.root.mainloop()
 
 
-def run_window(agent, voice=None, on_ready: Callable[[AssistantWindow], None] | None = None) -> None:
-    window = AssistantWindow(agent, voice=voice)
+def run_window(
+    agent,
+    voice=None,
+    on_ready: Callable[[AssistantWindow], None] | None = None,
+    stream: bool = False,
+) -> None:
+    window = AssistantWindow(agent, voice=voice, stream=stream)
     if on_ready:
         on_ready(window)
     window.run()

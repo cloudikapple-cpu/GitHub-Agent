@@ -199,6 +199,11 @@ def run_repl(agent: Agent, voice=None, config: Config | None = None) -> int:
         if user_input.lower() in {"undo", ":undo"}:
             _print(agent.tools.execute("undo_last", {}))
             continue
+        if user_input.lower() in {"usage", ":usage"}:
+            from .budget import default_tracker
+
+            _print(default_tracker().report())
+            continue
 
         try:
             if config is None:
@@ -277,6 +282,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["install", "remove", "status"],
         help="Manage starting the daemon at login.",
     )
+    parser.add_argument(
+        "--usage",
+        nargs="?",
+        const="today",
+        metavar="DAY",
+        help="Print token and spend accounting for today (or for YYYY-MM-DD) and exit.",
+    )
     parser.add_argument("--list-tools", action="store_true", help="Print available tools and exit.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show tool calls and results.")
     return parser
@@ -284,6 +296,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.usage:
+        # Accounting is read straight from the ledger: no provider, no API key
+        # and no config file are needed to answer 'what did today cost?'.
+        from .budget import default_tracker
+
+        day = None if args.usage == "today" else args.usage
+        _print(default_tracker().report(day))
+        return 0
 
     if args.autostart:
         from . import autostart
@@ -335,7 +356,9 @@ def main(argv: list[str] | None = None) -> int:
             from .voice import VoiceIO
 
             voice = VoiceIO(config.voice)
-        window = AssistantWindow(agent, voice=voice)
+        window = AssistantWindow(
+            agent, voice=voice, stream=getattr(config.interface, "stream", False)
+        )
         agent.confirm_hook = window.confirm
         agent.on_event = lambda line: window.push_event("trace", line)
         window.run()
