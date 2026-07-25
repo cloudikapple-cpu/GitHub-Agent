@@ -7,6 +7,13 @@ and, if the provider needs them, add custom ``headers``.
 
 Requests are retried on timeouts and throttling, and every call is metered by
 the budget tracker.
+
+Not every endpoint answers in the shape the OpenAI SDK documents. Reasoning
+models served through NVIDIA NIM (GLM, DeepSeek-R1, QwQ) put their answer in
+``reasoning_content`` and leave ``content`` empty; some gateways return a list
+of content parts. Reading only ``content`` turned those replies into silence,
+so :func:`extract_content` handles all three shapes and explains the two cases
+where there really is nothing to show.
 """
 
 from __future__ import annotations
@@ -17,6 +24,66 @@ from typing import Any
 from ..budget import BudgetTracker, default_tracker, estimate_tokens, usage_from_openai
 from ..retry import call_with_retry
 from .base import LLMBackend, LLMResponse, ToolCall
+
+#: Fields reasoning models use instead of ``content``.
+REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+#: Shown when the model ran out of tokens before writing anything.
+TRUNCATED_NOTE = (
+    "The model hit its token limit before it produced an answer. "
+    "Raise max_tokens for this provider in config.yaml and ask again."
+)
+
+#: Shown when the endpoint answered with an empty message and no tool call.
+EMPTY_NOTE = (
+    "The provider returned an empty message. This usually means the model name "
+    "is wrong for this endpoint, or the endpoint answered in an unexpected "
+    "shape. Run 'jarvis --doctor' to check the provider, model and key."
+)
+
+
+def _text_of(part: Any) -> str:
+    """Return the text of a single content part, whatever shape it has."""
+
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        return str(part.get("text") or "")
+    return str(getattr(part, "text", "") or "")
+
+
+def _field(message: Any, name: str) -> Any:
+    """Read ``name`` from the message, including undocumented extra fields."""
+
+    value = getattr(message, name, None)
+    if value is None:
+        extra = getattr(message, "model_extra", None) or {}
+        if isinstance(extra, dict):
+            value = extra.get(name)
+    return value
+
+
+def extract_content(message: Any, finish_reason: str = "") -> str:
+    """Return the text of an assistant message, or an explanation of its absence.
+
+    Returns an empty string only when the message is genuinely empty and the
+    reason is unknown — the caller decides what to do with that.
+    """
+
+    content = getattr(message, "content", None)
+    if isinstance(content, (list, tuple)):
+        content = "".join(_text_of(part) for part in content)
+    if content and str(content).strip():
+        return str(content)
+
+    for name in REASONING_FIELDS:
+        value = _field(message, name)
+        if value and str(value).strip():
+            return str(value)
+
+    if finish_reason == "length":
+        return TRUNCATED_NOTE
+    return ""
 
 
 class OpenAIBackend(LLMBackend):
@@ -165,7 +232,9 @@ class OpenAIBackend(LLMBackend):
             lambda: self.client.chat.completions.create(**kwargs),
             description=f"OpenAI-compatible request to {self.model}",
         )
-        choice = completion.choices[0].message
+        first = completion.choices[0]
+        choice = first.message
+        finish_reason = getattr(first, "finish_reason", "") or ""
 
         tool_calls: list[ToolCall] = []
         for tc in choice.tool_calls or []:
@@ -177,5 +246,9 @@ class OpenAIBackend(LLMBackend):
                 args = {"_raw": args}
             tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
 
-        self._meter(completion, messages, choice.content)
-        return LLMResponse(content=choice.content, tool_calls=tool_calls)
+        content = extract_content(choice, finish_reason)
+        self._meter(completion, messages, content)
+        if not content and not tool_calls:
+            # Silence is the one answer the user cannot act on.
+            content = EMPTY_NOTE
+        return LLMResponse(content=content, tool_calls=tool_calls)
