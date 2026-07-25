@@ -12,13 +12,14 @@ Not every endpoint answers in the shape the OpenAI SDK documents. Reasoning
 models served through NVIDIA NIM (GLM, DeepSeek-R1, QwQ) put their answer in
 ``reasoning_content`` and leave ``content`` empty; some gateways return a list
 of content parts. Reading only ``content`` turned those replies into silence,
-so :func:`extract_content` handles all three shapes and explains the two cases
-where there really is nothing to show.
+so :func:`extract_content` handles all three shapes -- in streaming mode too --
+and explains the two cases where there really is nothing to show.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from ..budget import BudgetTracker, default_tracker, estimate_tokens, usage_from_openai
@@ -67,7 +68,7 @@ def extract_content(message: Any, finish_reason: str = "") -> str:
     """Return the text of an assistant message, or an explanation of its absence.
 
     Returns an empty string only when the message is genuinely empty and the
-    reason is unknown — the caller decides what to do with that.
+    reason is unknown -- the caller decides what to do with that.
     """
 
     content = getattr(message, "content", None)
@@ -86,8 +87,42 @@ def extract_content(message: Any, finish_reason: str = "") -> str:
     return ""
 
 
+def extract_delta(delta: Any) -> str:
+    """Return the text carried by one streaming delta.
+
+    Same three shapes as :func:`extract_content`, minus the explanations: an
+    empty delta during a stream is normal, not a problem.
+    """
+
+    if delta is None:
+        return ""
+    content = getattr(delta, "content", None)
+    if isinstance(content, (list, tuple)):
+        content = "".join(_text_of(part) for part in content)
+    if content:
+        return str(content)
+    for name in REASONING_FIELDS:
+        value = _field(delta, name)
+        if value:
+            return str(value)
+    return ""
+
+
+def parse_arguments(raw: str | None) -> dict[str, Any]:
+    """Turn a tool-call argument string into a dict, whatever the model sent."""
+
+    try:
+        arguments = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {"_raw": raw}
+    if not isinstance(arguments, dict):
+        return {"_raw": arguments}
+    return arguments
+
+
 class OpenAIBackend(LLMBackend):
     name = "openai"
+    supports_streaming = True
 
     def __init__(
         self,
@@ -198,20 +233,11 @@ class OpenAIBackend(LLMBackend):
             for t in tools
         ]
 
-    # ------------------------------------------------------------------
-    def _meter(self, completion: Any, messages: list[dict[str, Any]], reply: str | None) -> None:
-        prompt_tokens, completion_tokens = usage_from_openai(completion)
-        if not prompt_tokens:
-            prompt_tokens = sum(
-                estimate_tokens(str(m.get("content") or "")) for m in messages
-            )
-        if not completion_tokens:
-            completion_tokens = estimate_tokens(reply or "")
-        self.budget.record(self.provider_name, self.model, prompt_tokens, completion_tokens)
-
-    def chat(self, messages, tools=None) -> LLMResponse:
-        self.budget.check()
-
+    def _request_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self._to_openai_messages(messages),
@@ -227,7 +253,32 @@ class OpenAIBackend(LLMBackend):
         if openai_tools:
             kwargs["tools"] = openai_tools
             kwargs["tool_choice"] = "auto"
+        return kwargs
 
+    # ------------------------------------------------------------------
+    def _meter(self, completion: Any, messages: list[dict[str, Any]], reply: str | None) -> None:
+        prompt_tokens, completion_tokens = usage_from_openai(completion)
+        if not prompt_tokens:
+            prompt_tokens = sum(
+                estimate_tokens(str(m.get("content") or "")) for m in messages
+            )
+        if not completion_tokens:
+            completion_tokens = estimate_tokens(reply or "")
+        self.budget.record(self.provider_name, self.model, prompt_tokens, completion_tokens)
+
+    def _meter_estimate(self, messages: list[dict[str, Any]], reply: str) -> None:
+        """Meter a streamed call, which usually carries no usage block."""
+
+        prompt_tokens = sum(estimate_tokens(str(m.get("content") or "")) for m in messages)
+        self.budget.record(
+            self.provider_name, self.model, prompt_tokens, estimate_tokens(reply or "")
+        )
+
+    # ------------------------------------------------------------------
+    def chat(self, messages, tools=None) -> LLMResponse:
+        self.budget.check()
+
+        kwargs = self._request_kwargs(messages, tools)
         completion = call_with_retry(
             lambda: self.client.chat.completions.create(**kwargs),
             description=f"OpenAI-compatible request to {self.model}",
@@ -236,19 +287,103 @@ class OpenAIBackend(LLMBackend):
         choice = first.message
         finish_reason = getattr(first, "finish_reason", "") or ""
 
-        tool_calls: list[ToolCall] = []
-        for tc in choice.tool_calls or []:
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {"_raw": tc.function.arguments}
-            if not isinstance(args, dict):
-                args = {"_raw": args}
-            tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
+        tool_calls = [
+            ToolCall(id=tc.id, name=tc.function.name, arguments=parse_arguments(tc.function.arguments))
+            for tc in choice.tool_calls or []
+        ]
 
         content = extract_content(choice, finish_reason)
         self._meter(completion, messages, content)
+        empty = False
         if not content and not tool_calls:
             # Silence is the one answer the user cannot act on.
             content = EMPTY_NOTE
-        return LLMResponse(content=content, tool_calls=tool_calls)
+            empty = True
+        return LLMResponse(
+            content=content,
+            tool_calls=tool_calls,
+            provider=self.provider_name,
+            empty=empty,
+        )
+
+    # ------------------------------------------------------------------
+    def stream_response(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        sink: Callable[[str], None] | None = None,
+    ) -> LLMResponse:
+        """Stream tokens into ``sink`` and return the assembled response.
+
+        Tool calls arrive in fragments -- the id and name first, then the
+        arguments a few characters at a time -- so they are reassembled by
+        index before the loop ends.
+        """
+
+        self.budget.check()
+
+        kwargs = self._request_kwargs(messages, tools)
+        kwargs["stream"] = True
+        stream = call_with_retry(
+            lambda: self.client.chat.completions.create(**kwargs),
+            description=f"OpenAI-compatible stream from {self.model}",
+        )
+
+        parts: list[str] = []
+        fragments: dict[int, dict[str, str]] = {}
+        finish_reason = ""
+
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = getattr(choice, "finish_reason", "") or finish_reason
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+
+            text = extract_delta(delta)
+            if text:
+                parts.append(text)
+                if sink is not None:
+                    sink(text)
+
+            for call in getattr(delta, "tool_calls", None) or []:
+                index = int(getattr(call, "index", 0) or 0)
+                entry = fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                if getattr(call, "id", ""):
+                    entry["id"] = str(call.id)
+                function = getattr(call, "function", None)
+                if function is None:
+                    continue
+                if getattr(function, "name", ""):
+                    entry["name"] = str(function.name)
+                if getattr(function, "arguments", ""):
+                    entry["arguments"] += str(function.arguments)
+
+        tool_calls = [
+            ToolCall(
+                id=entry["id"] or f"call_{index}",
+                name=entry["name"],
+                arguments=parse_arguments(entry["arguments"]),
+            )
+            for index, entry in sorted(fragments.items())
+            if entry["name"]
+        ]
+
+        content = "".join(parts)
+        if not content.strip() and finish_reason == "length":
+            content = TRUNCATED_NOTE
+        self._meter_estimate(messages, content)
+
+        empty = False
+        if not content.strip() and not tool_calls:
+            content = EMPTY_NOTE
+            empty = True
+        return LLMResponse(
+            content=content,
+            tool_calls=tool_calls,
+            provider=self.provider_name,
+            empty=empty,
+        )
