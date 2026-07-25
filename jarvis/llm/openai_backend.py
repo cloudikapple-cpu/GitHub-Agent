@@ -1,9 +1,12 @@
 """OpenAI Chat Completions backend.
 
 Works with **any** OpenAI-compatible API: OpenAI itself, OpenRouter, Groq,
-Together, DeepSeek, Mistral, Fireworks, LM Studio, vLLM, llama.cpp server or a
-corporate gateway. Point ``base_url`` at the endpoint and, if the provider
-needs them, add custom ``headers``.
+Together, DeepSeek, Mistral, Fireworks, NVIDIA NIM, LM Studio, vLLM,
+llama.cpp server or a corporate gateway. Point ``base_url`` at the endpoint
+and, if the provider needs them, add custom ``headers``.
+
+Requests are retried on timeouts and throttling, and every call is metered by
+the budget tracker.
 """
 
 from __future__ import annotations
@@ -11,6 +14,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..budget import BudgetTracker, default_tracker, estimate_tokens, usage_from_openai
+from ..retry import call_with_retry
 from .base import LLMBackend, LLMResponse, ToolCall
 
 
@@ -27,6 +32,8 @@ class OpenAIBackend(LLMBackend):
         max_tokens: int | None = None,
         extra_body: dict[str, Any] | None = None,
         timeout: int = 180,
+        provider_name: str = "",
+        budget: BudgetTracker | None = None,
     ):
         try:
             from openai import OpenAI
@@ -53,6 +60,8 @@ class OpenAIBackend(LLMBackend):
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.extra_body = extra_body or {}
+        self.provider_name = provider_name or self.name
+        self.budget = budget or default_tracker()
 
     # ------------------------------------------------------------------
     @classmethod
@@ -68,6 +77,7 @@ class OpenAIBackend(LLMBackend):
             max_tokens=provider.max_tokens,
             extra_body=provider.extra_body,
             timeout=provider.timeout,
+            provider_name=getattr(provider, "name", "") or "",
         )
 
     # ------------------------------------------------------------------
@@ -122,7 +132,19 @@ class OpenAIBackend(LLMBackend):
         ]
 
     # ------------------------------------------------------------------
+    def _meter(self, completion: Any, messages: list[dict[str, Any]], reply: str | None) -> None:
+        prompt_tokens, completion_tokens = usage_from_openai(completion)
+        if not prompt_tokens:
+            prompt_tokens = sum(
+                estimate_tokens(str(m.get("content") or "")) for m in messages
+            )
+        if not completion_tokens:
+            completion_tokens = estimate_tokens(reply or "")
+        self.budget.record(self.provider_name, self.model, prompt_tokens, completion_tokens)
+
     def chat(self, messages, tools=None) -> LLMResponse:
+        self.budget.check()
+
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": self._to_openai_messages(messages),
@@ -139,7 +161,10 @@ class OpenAIBackend(LLMBackend):
             kwargs["tools"] = openai_tools
             kwargs["tool_choice"] = "auto"
 
-        completion = self.client.chat.completions.create(**kwargs)
+        completion = call_with_retry(
+            lambda: self.client.chat.completions.create(**kwargs),
+            description=f"OpenAI-compatible request to {self.model}",
+        )
         choice = completion.choices[0].message
 
         tool_calls: list[ToolCall] = []
@@ -152,4 +177,5 @@ class OpenAIBackend(LLMBackend):
                 args = {"_raw": args}
             tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, arguments=args))
 
+        self._meter(completion, messages, choice.content)
         return LLMResponse(content=choice.content, tool_calls=tool_calls)

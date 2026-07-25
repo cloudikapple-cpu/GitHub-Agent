@@ -1,24 +1,29 @@
 """Web search and page fetching.
 
-Search goes through **Tavily** when an API key is available — it is built for
+Search goes through **Tavily** when an API key is available - it is built for
 LLM agents and returns clean, ranked content plus an optional synthesised
 answer. DuckDuckGo remains the keyless fallback, so search keeps working with
 no configuration at all.
 
 Provider selection (``search.provider``):
 
-* ``auto``       — Tavily if a key is set, otherwise DuckDuckGo (default);
-* ``tavily``     — Tavily only;
-* ``duckduckgo`` — DuckDuckGo only.
+* ``auto``       - Tavily if a key is set, otherwise DuckDuckGo (default);
+* ``tavily``     - Tavily only;
+* ``duckduckgo`` - DuckDuckGo only.
+
+Every HTTP call goes through :func:`request_with_retry`, so a timeout or a
+``429`` is retried with exponential backoff instead of failing the turn.
 """
 
 from __future__ import annotations
 
 import html
 import re
+from typing import Any
 
 import requests
 
+from ..retry import RETRYABLE_STATUS, call_with_retry
 from .base import Tool
 
 _USER_AGENT = (
@@ -32,6 +37,28 @@ _DDG_URL = "https://html.duckduckgo.com/html/"
 
 class SearchError(RuntimeError):
     """Raised when a search provider fails and a fallback should be tried."""
+
+
+class TransientHTTPError(requests.RequestException):
+    """A retryable status (429, 5xx) raised so the retry helper can see it."""
+
+    def __init__(self, status_code: int, description: str):
+        super().__init__(f"{description} returned HTTP {status_code}")
+        self.status_code = status_code
+
+
+def request_with_retry(
+    method: str, url: str, *, description: str, **kwargs: Any
+) -> requests.Response:
+    """Perform an HTTP request, repeating throttled and 5xx responses."""
+
+    def attempt() -> requests.Response:
+        response = requests.request(method, url, **kwargs)
+        if response.status_code in RETRYABLE_STATUS:
+            raise TransientHTTPError(response.status_code, description)
+        return response
+
+    return call_with_retry(attempt, description=description)
 
 
 # ----------------------------------------------------------------------
@@ -57,11 +84,13 @@ def tavily_search(
         "include_answer": bool(include_answer),
     }
     try:
-        response = requests.post(
+        response = request_with_retry(
+            "POST",
             _TAVILY_SEARCH_URL,
             json=payload,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
+            description="Tavily search",
         )
     except requests.RequestException as exc:
         raise SearchError(f"Tavily request failed: {exc}") from exc
@@ -115,11 +144,13 @@ def duckduckgo_search(query: str, max_results: int = 5, timeout: int = 20) -> st
         pass
 
     try:
-        response = requests.post(
+        response = request_with_retry(
+            "POST",
             _DDG_URL,
             data={"q": query},
             headers={"User-Agent": _USER_AGENT},
             timeout=timeout,
+            description="DuckDuckGo search",
         )
         response.raise_for_status()
     except requests.RequestException as exc:
@@ -200,7 +231,7 @@ class WebSearchTool(Tool):
                 result = duckduckgo_search(query, max_results=limit)
                 prefix = "Search results (DuckDuckGo)"
                 if errors:
-                    prefix += " — Tavily unavailable"
+                    prefix += " - Tavily unavailable"
                 return f"{prefix} for '{query}':\n\n{result}"
             except SearchError as exc:
                 errors.append(f"{provider}: {exc}")
@@ -237,11 +268,13 @@ class WebFetchTool(Tool):
     def _tavily_extract(self, url: str, timeout: int = 30) -> str:
         if not self.config.tavily_api_key:
             raise SearchError("no Tavily API key")
-        response = requests.post(
+        response = request_with_retry(
+            "POST",
             _TAVILY_EXTRACT_URL,
             json={"urls": [url]},
             headers={"Authorization": f"Bearer {self.config.tavily_api_key}"},
             timeout=timeout,
+            description="Tavily extract",
         )
         if response.status_code >= 400:
             raise SearchError(f"Tavily extract returned HTTP {response.status_code}")
@@ -252,7 +285,13 @@ class WebFetchTool(Tool):
 
     @staticmethod
     def _plain_fetch(url: str, timeout: int = 25) -> str:
-        response = requests.get(url, headers={"User-Agent": _USER_AGENT}, timeout=timeout)
+        response = request_with_retry(
+            "GET",
+            url,
+            headers={"User-Agent": _USER_AGENT},
+            timeout=timeout,
+            description=f"fetch {url}",
+        )
         response.raise_for_status()
         markup = response.text
 
