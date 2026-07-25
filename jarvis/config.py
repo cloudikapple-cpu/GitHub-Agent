@@ -1,21 +1,22 @@
 """Configuration loading for Jarvis.
 
-Resolved from three sources, in increasing priority:
+Resolved from four sources, in increasing priority:
 
 1. Built-in defaults.
 2. A YAML file (``config.yaml`` by default).
 3. Environment variables (optionally loaded from a ``.env`` file).
+4. The OS keychain, for values written as ``keyring:NAME``.
 
-Command-line flags are applied on top of all three by :mod:`jarvis.cli`, so the
-rule is: the closer a setting is to the command you just typed, the stronger it
-is. Until 0.5.1 the YAML file was applied *after* the environment, so a stale
-``config.yaml`` silently won over ``.env`` — including the choice of provider.
-Every value now records where it came from (:meth:`Config.source_of`), and
-``jarvis --doctor`` prints it.
+Command-line flags are applied on top of all of them by :mod:`jarvis.cli`, so
+the rule is: the closer a setting is to the command you just typed, the
+stronger it is. Until 0.5.1 the YAML file was applied *after* the environment,
+so a stale ``config.yaml`` silently won over ``.env`` -- including the choice of
+provider. Every value now records where it came from
+(:meth:`Config.source_of`), and ``jarvis --doctor`` prints it.
 
-Any OpenAI-compatible endpoint can be used as a provider — OpenRouter, Groq,
+Any OpenAI-compatible endpoint can be used as a provider -- OpenRouter, Groq,
 NVIDIA NIM, Together, DeepSeek, LM Studio, vLLM, a corporate gateway, or your
-own server — by setting ``base_url`` (and optional custom ``headers``).
+own server -- by setting ``base_url`` (and optional custom ``headers``).
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ SOURCE_DEFAULT = "default"
 SOURCE_YAML = "config file"
 SOURCE_ENV = "environment"
 SOURCE_CLI = "command line"
+SOURCE_KEYRING = "keychain"
 
 #: Values accepted for the sandbox switch, which is a mode and not a flag.
 _SANDBOX_MODES = ("none", "docker", "firejail")
@@ -180,7 +182,7 @@ class RouterConfig:
     """
 
     enabled: bool = False
-    #: Provider used first — typically a local Ollama/LM Studio model.
+    #: Provider used first -- typically a local Ollama/LM Studio model.
     primary: str = "ollama"
     #: Providers tried in order when the primary fails.
     fallbacks: list[str] = field(default_factory=lambda: ["nim"])
@@ -218,6 +220,63 @@ class KnowledgeConfig:
     top_k: int = 5
     #: Automatically store a summary of each session.
     autosave_sessions: bool = True
+
+
+@dataclass
+class CacheConfig:
+    """Reuse of identical model requests.
+
+    Only plain answers are stored; a reply that calls a tool is never replayed.
+    """
+
+    enabled: bool = True
+    path: str = "~/.jarvis/cache.db"
+    #: How long an answer stays fresh, in seconds.
+    ttl_seconds: int = 86400
+    max_entries: int = 5000
+
+
+@dataclass
+class RagConfig:
+    """Retrieval over the user's own documents."""
+
+    enabled: bool = False
+    path: str = "~/.jarvis/documents.db"
+    #: Folders indexed by ``jarvis --index`` when it is given no path.
+    roots: list[str] = field(default_factory=list)
+    top_k: int = 4
+    chunk_size: int = 1200
+    overlap: int = 150
+    #: Passages below this similarity are noise and are not attached.
+    min_score: float = 0.12
+
+
+@dataclass
+class PlannerConfig:
+    """A cheap model drafts the plan; the main model carries it out."""
+
+    enabled: bool = False
+    #: Provider used for planning; empty means the active one.
+    provider: str = ""
+    max_steps: int = 6
+    #: Requests shorter than this are not worth a planning round-trip.
+    min_chars: int = 280
+
+
+@dataclass
+class WebConfig:
+    """The browser interface.
+
+    Anything that can reach this port can run commands as you, so the default
+    binding is loopback only and every call needs the generated token.
+    """
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8765
+    #: Empty means 'generate a fresh token at startup'.
+    token: str = ""
+    open_browser: bool = True
 
 
 @dataclass
@@ -285,9 +344,11 @@ class VoiceConfig:
 @dataclass
 class InterfaceConfig:
     #: Global shortcut that opens the quick-ask window.
-    hotkey: str = "ctrl+alt+space"
+    #: Alt+Shift is used rather than Ctrl+Alt: Windows reserves several
+    #: Ctrl+Alt combinations, and Ctrl+Alt+Space is taken by some IMEs.
+    hotkey: str = "alt+shift+space"
     #: Global shortcut that starts voice capture straight away.
-    voice_hotkey: str = "ctrl+alt+v"
+    voice_hotkey: str = "alt+shift+v"
     overlay: bool = True
     notify: bool = True
     #: Show a system tray icon when running as a daemon.
@@ -343,6 +404,10 @@ class Config:
     router: RouterConfig = field(default_factory=RouterConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
+    rag: RagConfig = field(default_factory=RagConfig)
+    planner: PlannerConfig = field(default_factory=PlannerConfig)
+    web: WebConfig = field(default_factory=WebConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     execution_sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     vision: VisionConfig = field(default_factory=VisionConfig)
@@ -371,7 +436,8 @@ class Config:
 
         The order matters and it is the opposite of what it was before 0.5.1:
         the environment is applied *last*, so `.env` beats a forgotten
-        ``config.yaml``.
+        ``config.yaml``. Keychain references are resolved at the very end, when
+        it is clear which value actually won.
         """
 
         load_dotenv()
@@ -384,6 +450,7 @@ class Config:
                 cfg._apply_yaml(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
         cfg._apply_env()
         cfg._ensure_builtin_providers()
+        cfg._resolve_secrets()
         return cfg
 
     # -- provenance ------------------------------------------------------
@@ -409,6 +476,26 @@ class Config:
         if source == SOURCE_YAML and self.config_file:
             return f"{SOURCE_YAML} {self.config_file}"
         return source
+
+    # -- secrets ---------------------------------------------------------
+    def _resolve_secrets(self) -> None:
+        """Replace ``keyring:NAME`` references with the secret behind them."""
+
+        from .secrets import is_reference, resolve
+
+        for name, provider in self.providers.items():
+            if is_reference(provider.api_key):
+                provider.api_key = str(resolve(provider.api_key))
+                self.mark_source(f"providers.{name}.api_key", SOURCE_KEYRING)
+        if is_reference(self.telegram.token):
+            self.telegram.token = str(resolve(self.telegram.token))
+            self.mark_source("telegram.token", SOURCE_KEYRING)
+        if is_reference(self.search.tavily_api_key):
+            self.search.tavily_api_key = str(resolve(self.search.tavily_api_key))
+            self.mark_source("search.tavily_api_key", SOURCE_KEYRING)
+        if is_reference(self.web.token):
+            self.web.token = str(resolve(self.web.token))
+            self.mark_source("web.token", SOURCE_KEYRING)
 
     # ------------------------------------------------------------------
     def _env_str(self, name: str, current: str, key: str = "") -> str:
@@ -563,6 +650,32 @@ class Config:
         self.router.fallbacks = self._env_list(
             "JARVIS_ROUTER_FALLBACKS", self.router.fallbacks, "router.fallbacks"
         )
+
+        # -- reply cache --
+        self.cache.enabled = self._env_bool("JARVIS_CACHE", self.cache.enabled, "cache.enabled")
+        self.cache.path = self._env_str("JARVIS_CACHE_PATH", self.cache.path, "cache.path")
+        self.cache.ttl_seconds = self._env_int(
+            "JARVIS_CACHE_TTL", self.cache.ttl_seconds, "cache.ttl_seconds"
+        )
+
+        # -- document retrieval --
+        self.rag.enabled = self._env_bool("JARVIS_RAG", self.rag.enabled, "rag.enabled")
+        self.rag.path = self._env_str("JARVIS_RAG_PATH", self.rag.path, "rag.path")
+        self.rag.roots = self._env_list("JARVIS_RAG_ROOTS", self.rag.roots, "rag.roots")
+
+        # -- planner --
+        self.planner.enabled = self._env_bool(
+            "JARVIS_PLANNER", self.planner.enabled, "planner.enabled"
+        )
+        self.planner.provider = self._env_str(
+            "JARVIS_PLANNER_PROVIDER", self.planner.provider, "planner.provider"
+        )
+
+        # -- web interface --
+        self.web.enabled = self._env_bool("JARVIS_WEB", self.web.enabled, "web.enabled")
+        self.web.host = self._env_str("JARVIS_WEB_HOST", self.web.host, "web.host")
+        self.web.port = self._env_int("JARVIS_WEB_PORT", self.web.port, "web.port")
+        self.web.token = self._env_str("JARVIS_WEB_TOKEN", self.web.token, "web.token")
 
         # -- execution sandbox --
         self._apply_env_sandbox()
@@ -822,6 +935,64 @@ class Config:
         self.knowledge.autosave_sessions = _as_bool(
             knowledge.get("autosave_sessions", self.knowledge.autosave_sessions),
             self.knowledge.autosave_sessions,
+        )
+
+        cache = data.get("cache") or {}
+        self.cache.enabled = _as_bool(cache.get("enabled", self.cache.enabled), self.cache.enabled)
+        if "enabled" in cache:
+            self.mark_source("cache.enabled", SOURCE_YAML)
+        self.cache.path = cache.get("path", self.cache.path)
+        self.cache.ttl_seconds = _as_int(
+            cache.get("ttl_seconds", self.cache.ttl_seconds), self.cache.ttl_seconds
+        )
+        if "ttl_seconds" in cache:
+            self.mark_source("cache.ttl_seconds", SOURCE_YAML)
+        self.cache.max_entries = _as_int(
+            cache.get("max_entries", self.cache.max_entries), self.cache.max_entries
+        )
+
+        rag = data.get("rag") or data.get("documents") or {}
+        self.rag.enabled = _as_bool(rag.get("enabled", self.rag.enabled), self.rag.enabled)
+        if "enabled" in rag:
+            self.mark_source("rag.enabled", SOURCE_YAML)
+        self.rag.path = rag.get("path", self.rag.path)
+        if rag.get("roots") is not None:
+            self.rag.roots = _as_list(rag.get("roots"))
+            self.mark_source("rag.roots", SOURCE_YAML)
+        self.rag.top_k = _as_int(rag.get("top_k", self.rag.top_k), self.rag.top_k)
+        self.rag.chunk_size = _as_int(rag.get("chunk_size", self.rag.chunk_size), self.rag.chunk_size)
+        self.rag.overlap = _as_int(rag.get("overlap", self.rag.overlap), self.rag.overlap)
+        self.rag.min_score = _as_float(rag.get("min_score", self.rag.min_score), self.rag.min_score)
+
+        planner = data.get("planner") or {}
+        self.planner.enabled = _as_bool(
+            planner.get("enabled", self.planner.enabled), self.planner.enabled
+        )
+        if "enabled" in planner:
+            self.mark_source("planner.enabled", SOURCE_YAML)
+        self.planner.provider = planner.get("provider", self.planner.provider)
+        if "provider" in planner:
+            self.mark_source("planner.provider", SOURCE_YAML)
+        self.planner.max_steps = _as_int(
+            planner.get("max_steps", self.planner.max_steps), self.planner.max_steps
+        )
+        self.planner.min_chars = _as_int(
+            planner.get("min_chars", self.planner.min_chars), self.planner.min_chars
+        )
+
+        web = data.get("web") or {}
+        self.web.enabled = _as_bool(web.get("enabled", self.web.enabled), self.web.enabled)
+        if "enabled" in web:
+            self.mark_source("web.enabled", SOURCE_YAML)
+        self.web.host = web.get("host", self.web.host)
+        if "host" in web:
+            self.mark_source("web.host", SOURCE_YAML)
+        self.web.port = _as_int(web.get("port", self.web.port), self.web.port)
+        if "port" in web:
+            self.mark_source("web.port", SOURCE_YAML)
+        self.web.token = web.get("token", self.web.token) or ""
+        self.web.open_browser = _as_bool(
+            web.get("open_browser", self.web.open_browser), self.web.open_browser
         )
 
         scheduler = data.get("scheduler") or {}

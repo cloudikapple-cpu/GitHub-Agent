@@ -1,7 +1,16 @@
-"""The core agent: an LLM reasoning loop wired to a set of tools."""
+"""The core agent: an LLM reasoning loop wired to a set of tools.
+
+The loop is written once, in :meth:`Agent._run_loop`, and used twice.
+:meth:`Agent.run` waits for the final answer; :meth:`Agent.stream` runs the very
+same loop on a worker thread and hands text to the caller as it arrives -- tool
+calls included. Before 0.6.0 streaming quietly gave up on any turn that used a
+tool, which is most of them.
+"""
 
 from __future__ import annotations
 
+import logging
+import queue
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -13,6 +22,8 @@ from .llm.base import ToolCall
 from .memory import ConversationMemory
 from .security import SecurityError
 from .tools import ToolRegistry, build_default_registry
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = """You are Jarvis, a capable desktop AI assistant.
 
@@ -52,6 +63,8 @@ MAX_DELEGATION_DEPTH = 2
 ConfirmHook = Callable[[str, dict[str, Any]], bool]
 # Hook type: called with a human-readable trace line.
 EventHook = Callable[[str], None]
+# Hook type: called with each piece of text as the model produces it.
+TextSink = Callable[[str], None]
 
 
 class Cancelled(RuntimeError):
@@ -78,6 +91,10 @@ class Agent:
         on_event: EventHook | None = None,
         memory: ConversationMemory | None = None,
         dry_run: bool = False,
+        documents: Any | None = None,
+        planner: Any | None = None,
+        cache: Any | None = None,
+        document_min_score: float = 0.12,
     ):
         self.backend = backend
         self.tools = tools
@@ -90,6 +107,13 @@ class Agent:
         #: Shared subsystems, populated by :meth:`from_config` when enabled.
         self.knowledge = getattr(tools, "knowledge", None)
         self.scheduler = getattr(tools, "scheduler", None)
+        #: Local document index (RAG), when configured.
+        self.documents = documents
+        self.document_min_score = document_min_score
+        #: Cheap planning model, when configured.
+        self.planner = planner
+        #: Reply cache, kept for reporting and clearing.
+        self.cache = cache
         #: Set by :meth:`cancel` to stop a run between steps.
         self.cancel_event = threading.Event()
 
@@ -128,6 +152,12 @@ class Agent:
             depth=depth,
         )
 
+        cache = cls._build_cache(config)
+        if cache is not None:
+            from .llm.caching import CachingBackend
+
+            backend = CachingBackend(backend, cache)
+
         system_prompt = DEFAULT_SYSTEM_PROMPT
         if config.persona:
             system_prompt = f"{system_prompt}\n\nPersona:\n{config.persona.strip()}"
@@ -150,6 +180,65 @@ class Agent:
             on_event=on_event,
             memory=memory,
             dry_run=config.dry_run,
+            documents=cls._build_documents(config),
+            planner=cls._build_planner(config, backend) if depth == 0 else None,
+            cache=cache,
+            document_min_score=getattr(config.rag, "min_score", 0.12),
+        )
+
+    # -- optional subsystems --------------------------------------------
+    @staticmethod
+    def _build_cache(config: Config) -> Any | None:
+        settings = getattr(config, "cache", None)
+        if settings is None or not settings.enabled:
+            return None
+        from .cache import ResponseCache
+
+        try:
+            return ResponseCache(
+                path=settings.path,
+                ttl=settings.ttl_seconds,
+                max_entries=settings.max_entries,
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken cache must not stop the agent
+            LOGGER.warning("Reply cache disabled: %s", exc)
+            return None
+
+    @staticmethod
+    def _build_documents(config: Config) -> Any | None:
+        settings = getattr(config, "rag", None)
+        if settings is None or not settings.enabled:
+            return None
+        from .knowledge import build_embedder
+        from .rag import DocumentIndex
+
+        try:
+            return DocumentIndex(
+                path=settings.path,
+                embedder=build_embedder(config),
+                chunk_size=settings.chunk_size,
+                overlap=settings.overlap,
+                top_k=settings.top_k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Document retrieval disabled: %s", exc)
+            return None
+
+    @staticmethod
+    def _build_planner(config: Config, backend: LLMBackend) -> Any | None:
+        settings = getattr(config, "planner", None)
+        if settings is None or not settings.enabled:
+            return None
+        from .planner import Planner
+
+        planning_backend: LLMBackend = backend
+        if settings.provider:
+            try:
+                planning_backend = build_backend(config, settings.provider)
+            except Exception as exc:  # noqa: BLE001 - fall back to the main model
+                LOGGER.warning("Planner provider unavailable (%s); using the main model", exc)
+        return Planner(
+            planning_backend, max_steps=settings.max_steps, min_chars=settings.min_chars
         )
 
     # ------------------------------------------------------------------
@@ -206,11 +295,42 @@ class Agent:
         joined = "\n".join(f"- {note.text}" for note in notes)
         return f"Relevant notes from long-term memory:\n{joined}"
 
+    def _document_context(self, user_message: str) -> str:
+        """Pull relevant passages from the user's indexed documents."""
+
+        if self.documents is None:
+            return ""
+        from .rag import format_context
+
+        try:
+            chunks = self.documents.search(user_message, min_score=self.document_min_score)
+        except Exception:  # noqa: BLE001 - retrieval must never break a run
+            return ""
+        return format_context(chunks)
+
+    def _plan_context(self, user_message: str) -> str:
+        """Draft a plan for long requests, if a planner is configured."""
+
+        if self.planner is None or self.dry_run:
+            return ""
+        try:
+            plan = self.planner.context(user_message)
+        except Exception:  # noqa: BLE001
+            return ""
+        if plan:
+            self._emit("plan", plan)
+        return plan
+
     def _prepare(self, user_message: str) -> list[dict[str, Any]] | None:
-        """Record the user turn (with recalled context) and return tool schemas."""
+        """Record the user turn (with context) and return the tool schemas."""
 
         self.cancel_event.clear()
-        context = self._recall_context(user_message)
+        blocks = [
+            self._recall_context(user_message),
+            self._document_context(user_message),
+            self._plan_context(user_message),
+        ]
+        context = "\n\n".join(block for block in blocks if block)
         content = f"{context}\n\n{user_message}" if context else user_message
         self.memory.add({"role": "user", "content": content})
         return None if self.dry_run else self.tools.schemas()
@@ -221,15 +341,40 @@ class Agent:
         return text
 
     # ------------------------------------------------------------------
-    def run(self, user_message: str) -> str:
-        """Process a single user message and return the assistant's final reply."""
+    def _guarded(self, sink: TextSink | None) -> TextSink | None:
+        """Wrap ``sink`` so a cancelled run stops mid-answer, not after it."""
+
+        if sink is None:
+            return None
+
+        def guarded(text: str) -> None:
+            self._check_cancelled()
+            if text:
+                sink(text)
+
+        return guarded
+
+    def _respond(self, tool_schemas: list[dict[str, Any]] | None, sink: TextSink | None):
+        """One model turn, streamed when both the caller and backend allow it."""
+
+        messages = self.memory.messages()
+        if sink is not None and getattr(self.backend, "supports_streaming", False):
+            return self.backend.stream_response(messages, tools=tool_schemas, sink=sink)
+        response = self.backend.chat(messages, tools=tool_schemas)
+        if sink is not None and response.content and not response.wants_tools:
+            sink(response.content)
+        return response
+
+    def _run_loop(self, user_message: str, sink: TextSink | None = None) -> str:
+        """The reasoning loop shared by :meth:`run` and :meth:`stream`."""
 
         tool_schemas = self._prepare(user_message)
+        guarded = self._guarded(sink)
 
         try:
             for _ in range(self.max_iterations):
                 self._check_cancelled()
-                response = self.backend.chat(self.memory.messages(), tools=tool_schemas)
+                response = self._respond(tool_schemas, guarded)
 
                 if not response.wants_tools:
                     return self._finish(response.content or "")
@@ -259,23 +404,48 @@ class Agent:
         return self._finish(MAX_ITERATIONS_MESSAGE)
 
     # ------------------------------------------------------------------
-    def stream(self, user_message: str) -> Iterator[str]:
-        """Yield the reply as it is produced.
+    def run(self, user_message: str) -> str:
+        """Process a single user message and return the assistant's final reply."""
 
-        Tool-using turns cannot be streamed meaningfully — the tokens are a
-        function call, not prose — so the loop streams the answer only while no
-        tool has been requested, and falls back to :meth:`run` as soon as the
-        model reaches for a tool. Cancellation works between chunks.
+        return self._run_loop(user_message)
+
+    def stream(self, user_message: str) -> Iterator[str]:
+        """Yield the reply as it is produced, tools and all.
+
+        The loop runs on a worker thread and pushes text into a queue, so tool
+        calls no longer end the stream: the assistant keeps talking between
+        actions, and the trace of those actions goes to ``on_event``.
         """
 
-        tool_schemas = self._prepare(user_message)
-        chunks: list[str] = []
-        try:
-            for chunk in self.backend.stream(self.memory.messages(), tools=tool_schemas):
-                self._check_cancelled()
-                chunks.append(chunk)
-                yield chunk
-        except Cancelled:
-            yield self._finish(CANCELLED_MESSAGE)
+        pipe: queue.Queue[str | None] = queue.Queue()
+        outcome: dict[str, str] = {}
+
+        def worker() -> None:
+            try:
+                outcome["text"] = self._run_loop(user_message, sink=pipe.put)
+            except Exception as exc:  # noqa: BLE001 - reported to the caller below
+                LOGGER.exception("Streaming run failed")
+                outcome["error"] = str(exc)
+            finally:
+                pipe.put(None)
+
+        thread = threading.Thread(target=worker, name="jarvis-agent-stream", daemon=True)
+        thread.start()
+
+        emitted = False
+        while True:
+            item = pipe.get()
+            if item is None:
+                break
+            emitted = True
+            yield item
+        thread.join(timeout=5)
+
+        if "error" in outcome:
+            yield f"\n[error] {outcome['error']}"
             return
-        self._finish("".join(chunks))
+        text = outcome.get("text", "")
+        # Control messages never pass through the sink, and a non-streaming
+        # backend may have produced nothing at all.
+        if text and (not emitted or text in {CANCELLED_MESSAGE, MAX_ITERATIONS_MESSAGE}):
+            yield text
