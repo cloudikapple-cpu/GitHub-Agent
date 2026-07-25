@@ -19,7 +19,8 @@ reuse them::
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from ..sandbox import Sandbox
 from .apps import (
@@ -46,6 +47,9 @@ from .integrations import ClipboardTool, HttpRequestTool, ListIntegrationsTool, 
 from .shell import PythonExecTool, ShellTool
 from .web import WebFetchTool, WebSearchTool
 
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from ..config import Config
+
 LOGGER = logging.getLogger(__name__)
 
 __all__ = [
@@ -63,7 +67,7 @@ def _tag(tools: list[Tool], category: str) -> list[Tool]:
 
 
 def build_default_registry(
-    config,
+    config: Config,
     backend_factory: Callable[[str | None], Any] | None = None,
     agent_factory: Callable[[str | None], Any] | None = None,
     depth: int = 0,
@@ -121,7 +125,18 @@ def build_default_registry(
     ):
         registry.register(tool)
 
-    for tool in _tag([OpenPathTool(), ScreenshotTool(), TypeTextTool(), HotkeyTool()], "desktop"):
+    # Desktop control is guarded by policy.allow_desktop; open_path also goes
+    # through check_path/allow_shell so it cannot be used to launch binaries
+    # behind the shell's back.
+    for tool in _tag(
+        [
+            OpenPathTool(policy),
+            ScreenshotTool(policy),
+            TypeTextTool(policy),
+            HotkeyTool(policy),
+        ],
+        "desktop",
+    ):
         registry.register(tool)
 
     for tool in _tag(
