@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.3.2
+
+### Added
+
+- **Retries with exponential backoff** (`jarvis/retry.py`). Every outbound HTTP
+  call — Tavily search and extract, DuckDuckGo, page fetching and the OpenAI,
+  Anthropic and Ollama backends — is repeated on connection errors, timeouts,
+  `429` and `5xx`, with jittered pauses capped at eight seconds. Permanent
+  failures such as `401` still fail instantly. Tunable with
+  `JARVIS_RETRY_ATTEMPTS`, `JARVIS_RETRY_BASE_DELAY` and `JARVIS_RETRY_MAX_DELAY`.
+- **Budget and token accounting** (`jarvis/budget.py`). Each model call is
+  metered into `~/.jarvis/usage.json` per provider and per day, with a built-in
+  price table (overridable through `JARVIS_PRICES`) and free local providers.
+  `JARVIS_BUDGET_DAILY_USD` warns at 80% and blocks paid calls at 100%.
+- **Single-instance lock** (`jarvis/singleton.py`). A second `jarvis --daemon`
+  used to duplicate every reminder and fight over the global hotkey; it is now
+  refused, and a lock left by a crash is reclaimed automatically.
+- **Reliability guide** (`docs/reliability.md`).
+- Tests for the retry helper, the ledger, the output cap and the daemon lock
+  (93 → 119 tests).
+
+### Changed
+
+- **Tool results are capped** at `JARVIS_MAX_TOOL_RESULT` characters (default
+  20000, `0` disables). Oversized output keeps its head and its tail, because
+  shell output and stack traces put the verdict last.
+- **Trimmed context is summarised.** Turns leaving the conversation window now
+  leave a short note next to the system prompt — how many messages were cut,
+  how the session started, which tools were already used — instead of vanishing
+  silently.
+- `ToolRegistry` logs a warning when a skill shadows a built-in tool name,
+  which used to happen silently and cost hours of debugging.
+
 ## 0.3.1
 
 ### Fixed

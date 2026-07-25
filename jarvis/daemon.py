@@ -2,11 +2,14 @@
 
 Run it with ``jarvis --daemon``. It stays resident and reacts to:
 
-* ``interface.hotkey``       — opens the window with the text field focused;
-* ``interface.voice_hotkey`` — opens the window and starts recording at once;
-* the tray icon              — the same actions without a keyboard;
-* due reminders and tasks    — notifications, or unattended agent runs;
-* Telegram messages          — when the bot is enabled.
+* ``interface.hotkey``       - opens the window with the text field focused;
+* ``interface.voice_hotkey`` - opens the window and starts recording at once;
+* the tray icon              - the same actions without a keyboard;
+* due reminders and tasks    - notifications, or unattended agent runs;
+* Telegram messages          - when the bot is enabled.
+
+Only one daemon may run at a time: a second one would duplicate every reminder
+and fight over the global hotkey, so startup is guarded by a PID lock.
 """
 
 from __future__ import annotations
@@ -14,23 +17,50 @@ from __future__ import annotations
 import logging
 import sys
 import threading
+from typing import TYPE_CHECKING
 
 from .agent import Agent
 from .config import Config
 from .hotkey import HotkeyManager
 from .notifications import notify
+from .singleton import AlreadyRunning, SingleInstance
+
+if TYPE_CHECKING:  # pragma: no cover - Tkinter is optional at runtime
+    from .ui import AssistantWindow
 
 LOGGER = logging.getLogger(__name__)
 
 
 def run_daemon(config: Config | None = None) -> int:
+    """Start the resident assistant, refusing to run twice."""
+
     config = config or Config.load()
 
-    from .ui import TK_AVAILABLE, AssistantWindow
+    from .ui import TK_AVAILABLE
 
     if not TK_AVAILABLE:
         print("The daemon needs Tkinter (install 'python3-tk' on Linux).", file=sys.stderr)
         return 1
+
+    lock = SingleInstance()
+    try:
+        lock.acquire()
+    except AlreadyRunning as exc:
+        print(
+            f"{exc} Reach it with the hotkey or the tray icon, "
+            "or stop that process before starting a new daemon.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        return _run(config)
+    finally:
+        lock.release()
+
+
+def _run(config: Config) -> int:
+    from .ui import AssistantWindow
 
     voice = None
     if config.voice.enabled:
@@ -87,12 +117,12 @@ def run_daemon(config: Config | None = None) -> int:
                     reply = f"Scheduled task failed: {exc}"
                 window.push_event("assistant", reply)
                 if config.interface.notify:
-                    notify("Jarvis — scheduled task", reply[:200])
+                    notify("Jarvis - scheduled task", reply[:200])
 
             threading.Thread(target=worker, name=f"jarvis-{job.id}", daemon=True).start()
             return
 
-        notify("Jarvis — reminder", job.text)
+        notify("Jarvis - reminder", job.text)
         window.push_event("trace", f"[reminder] {job.text}")
         if voice is not None and config.voice.speak_replies:
             threading.Thread(
