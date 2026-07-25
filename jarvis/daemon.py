@@ -1,4 +1,4 @@
-"""Background daemon: global hotkeys, tray icon, reminders, overlay and voice.
+"""Background daemon: global hotkeys, tray icon, reminders, overlay, web and voice.
 
 Run it with ``jarvis --daemon``. It stays resident and reacts to:
 
@@ -6,6 +6,7 @@ Run it with ``jarvis --daemon``. It stays resident and reacts to:
 * ``interface.voice_hotkey`` - opens the window and starts recording at once;
 * the tray icon              - the same actions without a keyboard;
 * due reminders and tasks    - notifications, or unattended agent runs;
+* the browser interface      - when ``web.enabled`` is set;
 * Telegram messages          - when the bot is enabled.
 
 While it runs it also keeps a short clipboard history, so 'what did I copy
@@ -95,10 +96,13 @@ def _run(config: Config) -> int:
 
     def open_and_listen() -> None:
         window.root.after(0, window.show)
-        window.root.after(150, window.listen)
+        if voice is not None:
+            window.root.after(150, window.listen)
 
     hotkeys.register(config.interface.hotkey, open_window)
-    if voice is not None and config.interface.voice_hotkey:
+    if config.interface.voice_hotkey:
+        # Registered even when voice is off: a shortcut that opens the window
+        # is more useful than one that silently does nothing.
         hotkeys.register(config.interface.voice_hotkey, open_and_listen)
 
     # Ask the OS before starting: a shortcut owned by another application would
@@ -107,9 +111,10 @@ def _run(config: Config) -> int:
 
     try:
         backend = hotkeys.start()
-        hint = f"Hotkeys active via {backend}: {config.interface.hotkey}"
-        if voice is not None:
-            hint += f", voice: {config.interface.voice_hotkey}"
+        hint = f"Hotkeys active via {backend}: {config.interface.hotkey} (window)"
+        if config.interface.voice_hotkey:
+            role = "voice" if voice is not None else "window"
+            hint += f", {config.interface.voice_hotkey} ({role})"
     except RuntimeError as exc:
         hint = f"Hotkeys unavailable ({exc})"
 
@@ -169,6 +174,30 @@ def _run(config: Config) -> int:
         if tray.start():
             hint += ", tray on"
 
+    # -- browser interface ----------------------------------------------
+    web = None
+    if getattr(config, "web", None) is not None and config.web.enabled:
+        from .webui import WebServer
+
+        candidate = WebServer(
+            agent,
+            host=config.web.host,
+            port=config.web.port,
+            token=config.web.token,
+            stream=getattr(config.interface, "stream", True),
+        )
+        try:
+            url = candidate.start()
+        except OSError as exc:
+            # A busy port is a configuration problem, not a reason to refuse
+            # to run the rest of the daemon.
+            hint += f", web off ({exc})"
+        else:
+            web = candidate
+            hint += f", web at {url}"
+            if config.web.open_browser:
+                web.open_in_browser()
+
     # -- telegram -------------------------------------------------------
     bot = None
     if config.telegram.enabled:
@@ -177,13 +206,13 @@ def _run(config: Config) -> int:
         def telegram_agent(confirm_hook):
             return Agent.from_config(config, confirm_hook=confirm_hook, persist_memory=False)
 
-        candidate = TelegramBot(config, telegram_agent)
+        candidate_bot = TelegramBot(config, telegram_agent)
         try:
-            candidate.validate()
+            candidate_bot.validate()
         except ValueError as exc:
             hint += f", telegram off ({exc})"
         else:
-            bot = candidate
+            bot = candidate_bot
             threading.Thread(target=bot.run, name="jarvis-telegram", daemon=True).start()
             hint += ", telegram on"
 
@@ -199,6 +228,8 @@ def _run(config: Config) -> int:
         clipboard.stop()
         if scheduler is not None:
             scheduler.stop()
+        if web is not None:
+            web.stop()
         if bot is not None:
             bot.stop()
         if tray is not None:
