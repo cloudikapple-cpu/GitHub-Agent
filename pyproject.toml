@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-desktop"
-version = "0.5.1"
-description = "An extensible desktop AI assistant with tools, skills, MCP, memory, reminders, voice and a global hotkey"
+version = "0.6.0"
+description = "An extensible desktop AI assistant with tools, skills, MCP, memory, retrieval, reminders, voice, a web interface and a global hotkey"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -25,6 +25,8 @@ hotkey = ["pynput>=1.7"]
 voice = ["faster-whisper>=1.0", "sounddevice>=0.4", "pyttsx3>=2.90"]
 notify = ["plyer>=2.1"]
 tray = ["pystray>=0.19", "Pillow>=10.0"]
+# Secrets in the OS keychain instead of a file next to the code.
+keyring = ["keyring>=25.0"]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.5"]
 # Everything a Windows 11 desktop install needs in one extra.
 windows = [
@@ -35,6 +37,7 @@ windows = [
     "pynput>=1.7",
     "pystray>=0.19",
     "plyer>=2.1",
+    "keyring>=25.0",
 ]
 all = [
     "openai>=1.30",
@@ -51,6 +54,7 @@ all = [
     "pyttsx3>=2.90",
     "plyer>=2.1",
     "pystray>=0.19",
+    "keyring>=25.0",
 ]
 
 [project.scripts]
