@@ -102,5 +102,21 @@ def test_memory_trims_without_orphaning_tool_results():
     mem.add({"role": "assistant", "content": "2"})
     mem.add({"role": "user", "content": "3"})
     msgs = mem.messages()
-    assert msgs[0]["role"] == "system"
+
+    assert msgs[0] == {"role": "system", "content": "system"}
+    # The dropped turn is replaced by a note rather than vanishing silently.
+    assert msgs[1]["role"] == "system"
+    assert "trimmed" in msgs[1]["content"]
+    # system + note + the last two turns.
+    assert [m["content"] for m in msgs[2:]] == ["2", "3"]
+
+
+def test_memory_without_compaction_keeps_only_the_window():
+    mem = ConversationMemory("system", max_messages=2, compact=False)
+    mem.add({"role": "user", "content": "1"})
+    mem.add({"role": "assistant", "content": "2"})
+    mem.add({"role": "user", "content": "3"})
+    msgs = mem.messages()
+
     assert len(msgs) == 3  # system + last 2
+    assert [m["content"] for m in msgs[1:]] == ["2", "3"]
