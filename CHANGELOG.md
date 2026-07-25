@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.5.1
+
+### Fixed
+
+- **`config.yaml` silently won over `.env`.** The loader applied the
+  environment first and the YAML file second, so the file — usually the one
+  copied from the example months ago — decided the backend, the model and the
+  keys, while the variable the user had just edited did nothing. The order is
+  now defaults → `config.yaml` → environment, which is what the documentation
+  always claimed and what everyone expects. A provider block in the file is
+  *merged* on top of the built-in defaults instead of replacing them, so a two
+  line `nim:` section no longer erases the endpoint URL.
+- **Reasoning models answered with silence.** GLM, DeepSeek-R1 and QwQ served
+  through NVIDIA NIM put their reply in `reasoning_content` and leave `content`
+  empty; the backend read `content` only, so the assistant printed nothing and
+  offered a new prompt as if the request had never happened. The reply is now
+  read from `content`, from a list of content parts, or from `reasoning_content`
+  — whichever the endpoint used. A reply cut off by the token limit says so, and
+  an empty message with no tool call explains what usually causes it instead of
+  showing an empty line.
+- **A typo in `.env` no longer ends the run with a traceback.** Numeric
+  settings (`JARVIS_MAX_ITERATIONS`, timeouts, limits, both in the file and in
+  the environment) fall back to their previous value instead of raising
+  `ValueError` before anything is constructed.
+- **`JARVIS_SANDBOX=false` did the opposite of nothing.** The variable is a mode
+  (`none`, `docker`, `firejail`) but `.env.example` documents it as a boolean,
+  so the string `false` was stored as the sandbox mode. Booleans are now
+  understood (`false` → `none`, `true` → `docker`) and an unknown value is
+  ignored instead of silently breaking `run_shell`.
+
+### Added
+
+- **Every setting remembers where it came from.** `Config.source_of()` and
+  `Config.describe_source()` report `default`, the config file (by name) or the
+  environment, and `Config.overrides` lists the settings one source took away
+  from another.
+- **`jarvis --doctor` prints the provenance.** A `settings source` line names
+  the origin of the backend and the model, and an `overrides` line shows the
+  settings that were overridden — the fastest way to see that a forgotten
+  `config.yaml` is in charge.
+- Regression tests for all of the above: precedence in both directions, partial
+  provider blocks, broken numbers, the sandbox switch, and eight tests for the
+  response parsing of the OpenAI-compatible backend, none of which need the
+  `openai` package or the network.
+
 ## 0.5.0
 
 ### Added

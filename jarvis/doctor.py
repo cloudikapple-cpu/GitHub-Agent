@@ -70,6 +70,13 @@ def _missing(modules: tuple[str, ...]) -> list[str]:
     return [name for name in modules if not _installed(name)]
 
 
+def _origin(config: Config, key: str) -> str:
+    """Where a setting came from, for configs built by hand as well as loaded."""
+
+    describe = getattr(config, "describe_source", None)
+    return describe(key) if callable(describe) else "default"
+
+
 def _port_open(url: str, timeout: float = 1.0) -> bool:
     """Return True when something accepts connections at ``url``."""
 
@@ -125,6 +132,19 @@ def check_env() -> Check:
     )
 
 
+def check_overrides(config: Config) -> Check | None:
+    """List settings that one source took away from another.
+
+    Two files claiming the same setting is the single most confusing thing in
+    this configuration system, so the report says who won.
+    """
+
+    overrides = list(getattr(config, "overrides", []) or [])
+    if not overrides:
+        return None
+    return Check("overrides", OK, "; ".join(overrides[:5]))
+
+
 def check_provider(config: Config, probe: bool = True) -> list[Check]:
     """Check the selected provider: model, credentials, reachability, SDK."""
 
@@ -145,7 +165,13 @@ def check_provider(config: Config, probe: bool = True) -> list[Check]:
             "provider",
             OK,
             f"{provider.name} ({provider.kind}), model {provider.model or 'unset'}",
-        )
+        ),
+        Check(
+            "settings source",
+            OK,
+            f"backend from {_origin(config, 'backend')}, "
+            f"model from {_origin(config, f'providers.{provider.name}.model')}",
+        ),
     ]
 
     if not provider.model:
@@ -377,6 +403,9 @@ def diagnose(config: Config, config_path: str | None = None, probe: bool = True)
     """Run every check and return the results in reading order."""
 
     checks = [check_python(), check_config(config_path), check_env()]
+    overrides = check_overrides(config)
+    if overrides is not None:
+        checks.append(overrides)
     checks.extend(check_provider(config, probe=probe))
     checks.append(check_state_dir())
     checks.extend(check_features(config))
