@@ -145,6 +145,17 @@ def build_agent(args: argparse.Namespace) -> tuple[Agent, Config]:
     return agent, config
 
 
+def run_doctor(args: argparse.Namespace) -> int:
+    """Print the preflight report; return 1 when something blocks the run."""
+
+    from .doctor import diagnose, format_report, has_failures
+
+    config = apply_overrides(Config.load(args.config), args)
+    checks = diagnose(config, config_path=args.config)
+    _print(format_report(checks))
+    return 1 if has_failures(checks) else 0
+
+
 def respond(agent: Agent, config: Config, message: str) -> str:
     """Answer one message, streaming the reply when the config asks for it."""
 
@@ -283,6 +294,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Manage starting the daemon at login.",
     )
     parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Check this machine for everything Jarvis needs, then exit.",
+    )
+    parser.add_argument(
         "--usage",
         nargs="?",
         const="today",
@@ -296,6 +312,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.doctor:
+        # Diagnostics run before anything is constructed: the whole point is to
+        # explain a machine that cannot build an agent yet.
+        return run_doctor(args)
 
     if args.usage:
         # Accounting is read straight from the ledger: no provider, no API key
@@ -342,6 +363,7 @@ def main(argv: list[str] | None = None) -> int:
         agent, config = build_agent(args)
     except (ValueError, ImportError) as exc:
         _print(f"Configuration error: {exc}", style="red")
+        _print("Run 'jarvis --doctor' for a full check of this machine.", style="dim")
         return 1
 
     if args.list_tools:

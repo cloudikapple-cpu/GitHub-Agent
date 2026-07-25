@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- **`jarvis --doctor`** (`jarvis/doctor.py`). Everything needed for a first run
+  is checked before anything is constructed: the interpreter, `config.yaml` and
+  `.env`, the selected provider with its model and key (or whether Ollama is
+  actually listening), the optional packages behind desktop control, hotkeys,
+  the tray, voice and web search, the writability of `~/.jarvis`, PowerShell,
+  winget, the sandbox binary, and the permissions in force. Warnings mean a
+  feature is off; failures mean the assistant cannot work. Every non-passing
+  line carries the command that fixes it, and the exit code is 1 while a
+  blocking problem remains, so the command belongs in a setup script.
+- Fourteen tests for the diagnostics, none of which touch the network or the
+  real home folder.
+
+### Changed
+
+- A configuration error at startup now points at `jarvis --doctor` instead of
+  printing one line and exiting.
+- **The Windows 11 guide matches the code again.** It still described autostart
+  as a Startup-folder shortcut, which stopped being true in 0.4.0; it now
+  documents the Task Scheduler logon task (including how to inspect it),
+  `run_powershell`, clipboard history, toasts, the spend report and the
+  preflight check, and adds the troubleshooting entry for `jarvis` not being
+  recognised outside the virtual environment.
+- **`.env.example` documents the settings that existed only in code**: retry
+  attempts and backoff, the tool-result cap, the daily budget, the usage ledger
+  and price overrides, the PowerShell path and the toast application id.
+
 ## 0.4.2
 
 ### Fixed
