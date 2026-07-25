@@ -1,26 +1,73 @@
 """Voice input (speech-to-text) and output (text-to-speech).
 
 Everything is optional and lazily imported, so a text-only install keeps
-working. Recommended offline stack::
+working.
 
-    pip install "jarvis-desktop[voice]"   # faster-whisper + sounddevice + pyttsx3
+STT engines
+-----------
 
-STT engines: ``whisper`` (faster-whisper, offline), ``google``
-(SpeechRecognition, online), ``vosk`` (offline, lightweight).
+* ``auto``    - Groq when ``GROQ_API_KEY`` is set, local faster-whisper otherwise.
+* ``groq``    - Groq's hosted Whisper API: fastest and the most accurate for
+  Russian, needs a key and an internet connection.
+* ``whisper`` - faster-whisper, fully offline, needs the model downloaded once.
+* ``google``  - SpeechRecognition, online, no key.
+* ``vosk``    - offline and lightweight, lower quality.
+
 TTS engines: ``pyttsx3`` (offline) or ``none``.
+
+Install::
+
+    pip install "jarvis-desktop[voice]"   # microphone + local whisper + speech
+
+Groq needs no extra package beyond ``requests``: put ``GROQ_API_KEY`` in
+``.env`` (or ``keyring:GROQ_API_KEY`` in config.yaml) and set ``voice.stt:
+groq``.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import tempfile
 import wave
 from pathlib import Path
 
 SAMPLE_RATE = 16000
+LOGGER = logging.getLogger("jarvis.voice")
+
+#: Groq's OpenAI-compatible transcription endpoint.
+GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+#: Turbo is the fast one; ``whisper-large-v3`` is slightly better and slower.
+GROQ_DEFAULT_MODEL = "whisper-large-v3-turbo"
+#: Local model names, so a Groq model name is not passed to faster-whisper.
+LOCAL_WHISPER_MODELS = (
+    "tiny",
+    "base",
+    "small",
+    "medium",
+    "large",
+    "large-v2",
+    "large-v3",
+    "distil-large-v3",
+)
 
 
 class VoiceError(RuntimeError):
     """Raised when a voice backend is unavailable or fails."""
+
+
+def groq_api_key(config=None) -> str:
+    """Return the Groq key from the config, the keychain or the environment."""
+
+    raw = str(getattr(config, "stt_api_key", "") or "")
+    if raw:
+        try:
+            from .secrets import resolve
+
+            return str(resolve(raw))
+        except Exception:  # noqa: BLE001 - a missing keychain is not fatal here
+            return raw
+    return os.getenv("GROQ_API_KEY", "")
 
 
 class VoiceIO:
@@ -32,6 +79,15 @@ class VoiceIO:
         self.config = config or VoiceConfig()
         self._whisper = None
         self._tts = None
+
+    # -- engine selection ----------------------------------------------
+    def engine(self) -> str:
+        """Resolve the configured engine, expanding ``auto``."""
+
+        name = (self.config.stt or "auto").lower()
+        if name != "auto":
+            return name
+        return "groq" if groq_api_key(self.config) else "whisper"
 
     # -- recording -----------------------------------------------------
     def record(self, seconds: float | None = None) -> Path:
@@ -46,10 +102,13 @@ class VoiceIO:
                 "`pip install \"jarvis-desktop[voice]\"`."
             ) from exc
 
-        frames = sd.rec(
-            int(duration * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype="int16"
-        )
-        sd.wait()
+        try:
+            frames = sd.rec(
+                int(duration * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype="int16"
+            )
+            sd.wait()
+        except Exception as exc:  # noqa: BLE001 - device errors are wildly varied
+            raise VoiceError(f"The microphone could not be read: {exc}") from exc
 
         path = Path(tempfile.gettempdir()) / "jarvis_input.wav"
         with wave.open(str(path), "wb") as fh:
@@ -61,12 +120,74 @@ class VoiceIO:
 
     # -- transcription -------------------------------------------------
     def transcribe(self, wav_path: str | Path) -> str:
-        engine = (self.config.stt or "whisper").lower()
+        engine = self.engine()
+        path = Path(wav_path)
+        if engine == "groq":
+            try:
+                return self._transcribe_groq(path)
+            except VoiceError as exc:
+                # Losing the network should not lose the recording: keep going
+                # with the offline engine when it is installed.
+                LOGGER.warning("Groq transcription failed (%s); trying faster-whisper", exc)
+                return self._transcribe_whisper(path)
         if engine == "whisper":
-            return self._transcribe_whisper(Path(wav_path))
+            return self._transcribe_whisper(path)
         if engine == "vosk":
-            return self._transcribe_vosk(Path(wav_path))
-        return self._transcribe_speech_recognition(Path(wav_path))
+            return self._transcribe_vosk(path)
+        return self._transcribe_speech_recognition(path)
+
+    # -- groq ------------------------------------------------------------
+    def groq_model(self) -> str:
+        """Model name for Groq, ignoring local faster-whisper sizes."""
+
+        configured = str(getattr(self.config, "stt_model", "") or "")
+        if configured:
+            return configured
+        model = str(self.config.whisper_model or "")
+        if model and model.lower() not in LOCAL_WHISPER_MODELS:
+            return model
+        return GROQ_DEFAULT_MODEL
+
+    def _transcribe_groq(self, path: Path) -> str:
+        key = groq_api_key(self.config)
+        if not key:
+            raise VoiceError(
+                "Groq transcription needs a key. Add GROQ_API_KEY to .env "
+                "(free keys: https://console.groq.com/keys)."
+            )
+        try:
+            import requests
+        except ImportError as exc:  # pragma: no cover - requests is a hard dependency
+            raise VoiceError("Groq transcription needs 'requests'.") from exc
+
+        data = {"model": self.groq_model(), "response_format": "json"}
+        language = (self.config.language or "").strip()
+        if language and language.lower() != "auto":
+            data["language"] = language
+        try:
+            with path.open("rb") as fh:
+                response = requests.post(
+                    GROQ_URL,
+                    headers={"Authorization": f"Bearer {key}"},
+                    files={"file": (path.name, fh, "audio/wav")},
+                    data=data,
+                    timeout=120,
+                )
+        except OSError as exc:
+            raise VoiceError(f"The recording could not be sent to Groq: {exc}") from exc
+        if response.status_code == 401:
+            raise VoiceError("Groq rejected the key. Check GROQ_API_KEY.")
+        if response.status_code >= 400:
+            raise VoiceError(f"Groq returned HTTP {response.status_code}.")
+        try:
+            return str(response.json().get("text", "")).strip()
+        except ValueError as exc:
+            raise VoiceError("Groq returned a response that is not JSON.") from exc
+
+    # -- local engines ----------------------------------------------------
+    def _local_whisper_model(self) -> str:
+        model = str(self.config.whisper_model or "base")
+        return model if model.lower() in LOCAL_WHISPER_MODELS else "base"
 
     def _transcribe_whisper(self, path: Path) -> str:
         if self._whisper is None:
@@ -75,9 +196,10 @@ class VoiceIO:
             except ImportError as exc:
                 raise VoiceError(
                     "Local transcription needs 'faster-whisper'. Install with "
-                    "`pip install \"jarvis-desktop[voice]\"`."
+                    "`pip install \"jarvis-desktop[voice]\"`, or set voice.stt to "
+                    "'groq' and put GROQ_API_KEY in .env."
                 ) from exc
-            self._whisper = WhisperModel(self.config.whisper_model, compute_type="int8")
+            self._whisper = WhisperModel(self._local_whisper_model(), compute_type="int8")
         segments, _info = self._whisper.transcribe(str(path), language=self.config.language)
         return " ".join(segment.text.strip() for segment in segments).strip()
 
@@ -129,7 +251,7 @@ class VoiceIO:
             self._tts.say(text)
             self._tts.runAndWait()
         except Exception:  # noqa: BLE001 - speech must never break a run
-            pass
+            LOGGER.debug("Text to speech failed", exc_info=True)
 
 
 def available() -> bool:
@@ -137,6 +259,18 @@ def available() -> bool:
 
     try:
         import sounddevice  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def transcription_available(config=None) -> bool:
+    """True when some engine can turn the recording into text."""
+
+    if groq_api_key(config):
+        return True
+    try:
+        import faster_whisper  # noqa: F401
     except ImportError:
         return False
     return True
