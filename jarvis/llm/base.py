@@ -16,12 +16,20 @@ A user message may also carry images for vision-capable models::
 
     {"role": "user", "content": "what is on my screen?",
      "images": ["<base64 png>"]}
+
+Streaming has two entry points. :meth:`LLMBackend.stream_response` is the one
+backends implement: it pushes text into a ``sink`` callback as it arrives and
+returns the complete response, tool calls included -- which is what an agent
+loop needs. :meth:`LLMBackend.stream` is the convenience generator built on top
+of it for callers that only want text.
 """
 
 from __future__ import annotations
 
+import queue
+import threading
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +51,11 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     #: Provider that actually produced the answer (useful with the router).
     provider: str = ""
+    #: True when the provider said nothing at all and ``content`` is only an
+    #: explanation of that silence. The router uses it to try someone else.
+    empty: bool = False
+    #: True when the answer was replayed from the local cache.
+    cached: bool = False
 
     @property
     def wants_tools(self) -> bool:
@@ -55,7 +68,7 @@ class LLMBackend(ABC):
     name: str = "base"
     #: Backends that can read images set this to ``True``.
     supports_vision: bool = False
-    #: Backends that override :meth:`stream` set this to ``True``.
+    #: Backends that override :meth:`stream_response` set this to ``True``.
     supports_streaming: bool = False
 
     @abstractmethod
@@ -68,18 +81,53 @@ class LLMBackend(ABC):
         raise NotImplementedError
 
     # ------------------------------------------------------------------
+    def stream_response(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        sink: Callable[[str], None] | None = None,
+    ) -> LLMResponse:
+        """Stream the reply into ``sink`` and return the complete response.
+
+        The default implementation performs a normal request and hands over the
+        whole answer at once, so every backend works with streaming callers --
+        just without the typewriter effect.
+        """
+
+        response = self.chat(messages, tools)
+        if sink is not None and response.content and not response.wants_tools:
+            sink(response.content)
+        return response
+
     def stream(
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> Iterator[str]:
-        """Yield the reply in chunks.
+        """Yield the reply in chunks as they arrive.
 
-        The default implementation simply performs a normal request and yields
-        the whole answer once, so every backend can be used with streaming
-        interfaces without extra work.
+        The producer runs on its own thread so chunks reach the caller while
+        the request is still open; failures are re-raised on the caller's side.
         """
 
-        response = self.chat(messages, tools)
-        if response.content:
-            yield response.content
+        chunks: queue.Queue[str | None] = queue.Queue()
+        failure: dict[str, Exception] = {}
+
+        def worker() -> None:
+            try:
+                self.stream_response(messages, tools, sink=chunks.put)
+            except Exception as exc:  # noqa: BLE001 - re-raised on the consumer side
+                failure["error"] = exc
+            finally:
+                chunks.put(None)
+
+        thread = threading.Thread(target=worker, name="jarvis-llm-stream", daemon=True)
+        thread.start()
+        while True:
+            item = chunks.get()
+            if item is None:
+                break
+            yield item
+        thread.join(timeout=5)
+        if "error" in failure:
+            raise failure["error"]
