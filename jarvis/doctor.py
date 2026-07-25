@@ -80,6 +80,12 @@ def _origin(config: Config, key: str) -> str:
     return describe(key) if callable(describe) else "default"
 
 
+def _local_url(host: str, port: int) -> str:
+    """Build ``http://host:port`` without f-string brace surprises."""
+
+    return "http://" + str(host) + ":" + str(port)
+
+
 def _port_open(url: str, timeout: float = 1.0) -> bool:
     """Return True when something accepts connections at ``url``."""
 
@@ -120,10 +126,11 @@ def _writable(path: Path) -> str:
 
 
 def _human_size(size: int) -> str:
+    value = float(size)
     for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size = int(size / 1024)
+        if value < 1024 or unit == "GB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
     return f"{size} B"  # pragma: no cover - unreachable
 
 
@@ -374,6 +381,7 @@ def check_web(config: Config, probe: bool = True) -> Check | None:
     web = config.web
     if not web.enabled:
         return None
+    url = _local_url(web.host, web.port)
     if web.host not in {"127.0.0.1", "localhost", "::1"}:
         return Check(
             "web interface",
@@ -381,14 +389,14 @@ def check_web(config: Config, probe: bool = True) -> Check | None:
             f"bound to {web.host}, so anyone on the network can reach it",
             "set web.host to 127.0.0.1 unless you really mean it",
         )
-    if probe and _port_open(f"http://{web.host}:{web.port}"):
+    if probe and _port_open(url):
         return Check(
             "web interface",
             WARN,
             f"port {web.port} is already in use",
             "stop the other Jarvis, or set web.port to a free port",
         )
-    return Check("web interface", OK, f"http://{web.host}:{web.port}, token required")
+    return Check("web interface", OK, f"{url}, token required")
 
 
 def check_keychain(config: Config) -> Check:
@@ -483,10 +491,8 @@ def check_voice(config: Config) -> Check:
     """Voice needs a microphone plus one working transcription engine."""
 
     engine = (config.voice.stt or "auto").lower()
-    hosted = engine == "groq" or (
-        engine == "auto"
-        and bool(os.getenv("GROQ_API_KEY") or getattr(config.voice, "stt_api_key", ""))
-    )
+    key = os.getenv("GROQ_API_KEY", "") or str(getattr(config.voice, "stt_api_key", "") or "")
+    hosted = engine == "groq" or (engine == "auto" and bool(key))
 
     if hosted:
         missing = _missing(HOSTED_VOICE_MODULES)
@@ -497,7 +503,7 @@ def check_voice(config: Config) -> Check:
                 "voice is enabled but missing " + ", ".join(missing),
                 'pip install "jarvis-desktop[voice]"',
             )
-        if not os.getenv("GROQ_API_KEY") and not getattr(config.voice, "stt_api_key", ""):
+        if not key:
             return Check(
                 "voice",
                 FAIL,
