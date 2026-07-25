@@ -22,6 +22,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ..journal import Journal
 from ..sandbox import Sandbox
 from .apps import (
     InstallAppTool,
@@ -45,6 +46,7 @@ from .files import (
 )
 from .integrations import ClipboardTool, HttpRequestTool, ListIntegrationsTool, NotifyTool
 from .shell import PythonExecTool, ShellTool
+from .undo import HistoryTool, UndoTool
 from .web import WebFetchTool, WebSearchTool
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
@@ -80,24 +82,29 @@ def build_default_registry(
 
     policy = config.policy()
     sandbox = Sandbox(config.execution_sandbox)
+    # One journal for every destructive tool, so undo_last sees them all.
+    journal = Journal()
     registry = ToolRegistry()
     registry.knowledge = None
     registry.scheduler = None
     registry.sandbox = sandbox
+    registry.journal = journal
 
     for tool in _tag([WebSearchTool(config.search), WebFetchTool(config.search)], "web"):
         registry.register(tool)
 
     for tool in _tag(
         [
-            ReadFileTool(policy),
-            WriteFileTool(policy),
-            ListDirectoryTool(policy),
-            MakeDirectoryTool(policy),
-            DeletePathTool(policy),
-            MovePathTool(policy),
-            CopyPathTool(policy),
-            FindFilesTool(policy),
+            ReadFileTool(policy, journal),
+            WriteFileTool(policy, journal),
+            ListDirectoryTool(policy, journal),
+            MakeDirectoryTool(policy, journal),
+            DeletePathTool(policy, journal),
+            MovePathTool(policy, journal),
+            CopyPathTool(policy, journal),
+            FindFilesTool(policy, journal),
+            UndoTool(journal),
+            HistoryTool(journal),
         ],
         "files",
     ):
