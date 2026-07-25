@@ -1,10 +1,17 @@
-"""Local filesystem tools — all routed through the security policy."""
+"""Local filesystem tools — all routed through the security policy.
+
+Destructive operations (write over an existing file, delete, move) are recorded
+in the :class:`~jarvis.journal.Journal` first, so ``undo_last`` can reverse
+them. Deletes move the target into ``~/.jarvis/trash`` rather than destroying
+it.
+"""
 
 from __future__ import annotations
 
 import fnmatch
 import shutil
 
+from ..journal import Journal
 from ..security import SecurityError, SecurityPolicy
 from .base import Tool
 
@@ -13,10 +20,15 @@ _MAX_FIND_RESULTS = 300
 
 
 class _FileTool(Tool):
-    """Base class holding a :class:`SecurityPolicy`."""
+    """Base class holding a :class:`SecurityPolicy` and the undo journal."""
 
-    def __init__(self, policy: SecurityPolicy | None = None):
+    def __init__(
+        self,
+        policy: SecurityPolicy | None = None,
+        journal: Journal | None = None,
+    ):
         self.policy = policy or SecurityPolicy()
+        self.journal = journal or Journal()
 
 
 class ReadFileTool(_FileTool):
@@ -72,6 +84,11 @@ class WriteFileTool(_FileTool):
             p = self.policy.check_path(path, write=True)
         except SecurityError as exc:
             return f"Refused: {exc}"
+        try:
+            # Back up first: an unrecorded overwrite cannot be undone.
+            self.journal.record_write(p)
+        except OSError as exc:  # noqa: BLE001 - journalling must not block work
+            return f"Error backing up '{path}' before writing: {exc}"
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
             with p.open("a" if append else "w", encoding="utf-8") as fh:
@@ -142,8 +159,8 @@ class MakeDirectoryTool(_FileTool):
 class DeletePathTool(_FileTool):
     name = "delete_path"
     description = (
-        "Delete a file, or a folder together with its contents. "
-        "This is irreversible — confirm with the user first."
+        "Delete a file, or a folder together with its contents. The target is "
+        "moved to the Jarvis trash, so undo_last can bring it back."
     )
     requires_confirmation = True
     parameters = {
@@ -168,16 +185,13 @@ class DeletePathTool(_FileTool):
             return "Refused: refusing to delete a filesystem root."
         if not p.exists():
             return f"Error: '{path}' does not exist."
+        if p.is_dir() and any(p.iterdir()) and not recursive:
+            return f"'{p}' is not empty. Pass recursive=true to delete it."
         try:
-            if p.is_dir():
-                if any(p.iterdir()) and not recursive:
-                    return f"'{p}' is not empty. Pass recursive=true to delete it."
-                shutil.rmtree(p)
-            else:
-                p.unlink()
+            self.journal.record_delete(p)
         except OSError as exc:
             return f"Error deleting '{path}': {exc}"
-        return f"Deleted {p}."
+        return f"Deleted {p}. Run undo_last to restore it from the trash."
 
 
 class MovePathTool(_FileTool):
@@ -206,6 +220,10 @@ class MovePathTool(_FileTool):
             shutil.move(str(src), str(dst))
         except OSError as exc:
             return f"Error moving '{source}': {exc}"
+        try:
+            self.journal.record_move(src, dst)
+        except OSError:  # noqa: BLE001 - the move already succeeded
+            pass
         return f"Moved {src} -> {dst}."
 
 
