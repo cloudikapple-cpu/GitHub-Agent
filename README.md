@@ -44,6 +44,7 @@ cd GitHub-Agent
 pip install -e ".[all]"        # or: pip install -e ".[openai,web,desktop,hotkey,tray]"
 cp .env.example .env           # put your API keys here
 cp config.example.yaml config.yaml
+jarvis --doctor                # check this machine before the first run
 ```
 
 On Windows 11 the `windows` extra pulls in every desktop dependency at once:
@@ -51,11 +52,32 @@ On Windows 11 the `windows` extra pulls in every desktop dependency at once:
 
 Linux also needs `python3-tk` for the window and `notify-send` for notifications.
 
+### Preflight check
+
+`jarvis --doctor` verifies everything a first run depends on: the interpreter,
+`config.yaml` and `.env`, the selected provider with its model and key (or
+whether Ollama is actually listening), the optional packages behind desktop
+control, hotkeys, the tray, voice and search, the writability of `~/.jarvis`,
+PowerShell, winget, the sandbox binary, and the permissions in force.
+
+```
+[ ok ] provider: openai (openai), model gpt-4o-mini
+[fail] api key: provider 'openai' has no API key
+        fix: add the key to .env, or run with --api-key
+[warn] global hotkey: pynput is not installed, so the hotkeys do nothing
+        fix: pip install "jarvis-desktop[hotkey]"
+```
+
+Warnings mean a feature is unavailable; failures mean the assistant cannot work.
+The exit code is 1 while a blocking problem remains, so it fits in a setup
+script.
+
 ## Run
 
 ```bash
 jarvis                          # interactive terminal
 jarvis -m "summarise my notes"  # one-shot
+jarvis --doctor                 # is this machine ready?
 jarvis --gui                    # desktop window (text + microphone)
 jarvis --voice                  # speak your requests
 jarvis --daemon                 # background: hotkey, tray, reminders, clipboard history
@@ -342,6 +364,7 @@ jarvis --profile yolo        # only in a VM
 jarvis/
   agent.py         reasoning loop: LLM <-> tools, recall, dry-run, cancellation
   config.py        providers, router, search, security, memory, scheduler, MCP
+  doctor.py        preflight checks: provider, keys, packages, tools, permissions
   security.py      path sandbox, command deny-list, audit log
   journal.py       undo journal: trash, backups, reversible operations
   sandbox.py       docker / firejail execution
