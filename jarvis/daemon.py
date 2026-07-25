@@ -84,7 +84,9 @@ def _run(config: Config) -> int:
             window.push_event("trace", line)
 
     agent = Agent.from_config(config, confirm_hook=confirm, on_event=on_event)
-    window = AssistantWindow(agent, voice=voice)
+    window = AssistantWindow(
+        agent, voice=voice, stream=getattr(config.interface, "stream", False)
+    )
 
     hotkeys = HotkeyManager()
 
