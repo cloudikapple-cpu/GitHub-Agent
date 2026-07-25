@@ -7,9 +7,10 @@ open the printed URL -- from this machine, or from a phone on the same network
 if you bind to ``0.0.0.0`` on purpose.
 
 Security, briefly: the server binds to ``127.0.0.1`` by default and every API
-call requires a token that is generated at startup and embedded in the printed
+call requires a token that is generated at startup and embedded in the opened
 URL. Anything that can talk to this port can run shell commands as you, so
-changing the host is a deliberate act, not a default.
+changing the host is a deliberate act, not a default. Failures are reported to
+the page as a short sentence; the details go to the log, not to the browser.
 """
 
 from __future__ import annotations
@@ -33,6 +34,8 @@ DEFAULT_PORT = 8765
 MAX_HISTORY = 200
 #: SSE clients get a comment every few seconds so proxies keep the pipe open.
 PING_SECONDS = 15
+#: Shown in the browser instead of the exception text.
+FAILURE_NOTICE = "That request failed. The details are in the Jarvis log."
 
 INDEX_HTML = """<!doctype html>
 <html lang="en">
@@ -137,7 +140,7 @@ composer.addEventListener("submit", async (event) => {
       body: JSON.stringify({ message: message })
     });
   } catch (err) {
-    bubble("error", String(err));
+    bubble("error", "The request could not be sent.");
     ready();
   }
 });
@@ -158,11 +161,18 @@ def build_url(host: str, port: int, token: str) -> str:
     """Return the address to open in a browser.
 
     A server bound to every interface is still reached through loopback from
-    the machine it runs on, so ``0.0.0.0`` is printed as ``127.0.0.1``.
+    the machine it runs on, so ``0.0.0.0`` is turned into ``127.0.0.1``.
     """
 
     shown = "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
     return "http://" + shown + ":" + str(port) + "/?token=" + token
+
+
+def build_public_url(host: str, port: int) -> str:
+    """The same address without the session token, safe to print or log."""
+
+    shown = "127.0.0.1" if host in {"", "0.0.0.0", "::"} else host
+    return "http://" + shown + ":" + str(port) + "/"
 
 
 class WebServer:
@@ -251,9 +261,10 @@ class WebServer:
                 reply = self.agent.run(message)
             self.publish("assistant", reply)
             return reply
-        except Exception as exc:  # noqa: BLE001 - a failed turn must not kill the server
+        except Exception:  # noqa: BLE001 - a failed turn must not kill the server
+            # The browser gets a sentence; the traceback stays in the log.
             LOGGER.exception("Web request failed")
-            self.publish("error", str(exc))
+            self.publish("error", FAILURE_NOTICE)
             return ""
         finally:
             self._busy.release()
@@ -266,10 +277,18 @@ class WebServer:
     # -- lifecycle ------------------------------------------------------
     @property
     def url(self) -> str:
+        """The address including the session token. Open it, do not log it."""
+
         return build_url(self.host, self.port, self.token)
 
+    @property
+    def public_url(self) -> str:
+        """The address without the token, for printing and notifications."""
+
+        return build_public_url(self.host, self.port)
+
     def start(self) -> str:
-        """Start serving in the background and return the URL to open."""
+        """Start serving in the background and return the printable address."""
 
         handler = _make_handler(self)
         self._server = ThreadingHTTPServer((self.host, self.port), handler)
@@ -280,7 +299,12 @@ class WebServer:
             target=self._server.serve_forever, name="jarvis-web", daemon=True
         )
         self._thread.start()
-        return self.url
+        if self.host not in {DEFAULT_HOST, "localhost", "::1"}:
+            LOGGER.warning(
+                "The web interface is reachable from the network; anyone with the "
+                "token can run commands on this machine."
+            )
+        return self.public_url
 
     def open_in_browser(self) -> bool:
         try:
@@ -324,6 +348,8 @@ def _make_handler(server: WebServer) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             self.wfile.write(body)
 
