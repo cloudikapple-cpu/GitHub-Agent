@@ -90,7 +90,7 @@ class ProviderConfig:
     vision: bool = False
 
     @classmethod
-    def from_dict(cls, name: str, data: dict[str, Any]) -> "ProviderConfig":
+    def from_dict(cls, name: str, data: dict[str, Any]) -> ProviderConfig:
         data = _expand(data or {})
         return cls(
             name=name,
@@ -294,7 +294,7 @@ class Config:
 
     # ------------------------------------------------------------------
     @classmethod
-    def load(cls, config_path: str | os.PathLike[str] | None = "config.yaml") -> "Config":
+    def load(cls, config_path: str | os.PathLike[str] | None = "config.yaml") -> Config:
         load_dotenv()
         cfg = cls()
         cfg._apply_env()
