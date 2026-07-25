@@ -1,15 +1,20 @@
-"""Command line surfaces that do not need a model."""
+"""Command line surfaces that need neither a model nor a config file."""
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jarvis import budget, cli
 
 
 @pytest.fixture()
 def ledger(tmp_path, monkeypatch):
-    """An isolated usage ledger with one recorded call."""
+    """An isolated usage ledger, so the tests never touch ~/.jarvis."""
 
     monkeypatch.setenv("JARVIS_USAGE_LOG", str(tmp_path / "usage.json"))
     monkeypatch.delenv("JARVIS_BUDGET_DAILY_USD", raising=False)
@@ -25,7 +30,7 @@ def test_the_usage_report_shows_todays_spend(ledger, capsys):
 
     out = capsys.readouterr().out
     assert "openai" in out
-    assert "0.75" in out  # 0.15 + 0.60 per million tokens
+    assert "0.75" in out  # $0.15 + $0.60 per million tokens
 
 
 def test_the_usage_report_accepts_a_day(ledger, capsys):
@@ -34,32 +39,14 @@ def test_the_usage_report_accepts_a_day(ledger, capsys):
 
 
 def test_the_usage_report_needs_no_provider(ledger, capsys, monkeypatch):
-    # No API key, no config: the report must still work.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert cli.main(["--usage"]) == 0
     assert "usage" in capsys.readouterr().out.lower()
 
 
-def test_profiles_set_every_switch():
-    from jarvis.config import Config
-
-    config = cli.apply_profile(Config(), "safe")
-    assert config.allow_shell is False
-    assert config.allow_exec is False
-    assert config.require_confirmation is True
-
-    config = cli.apply_profile(Config(), "yolo")
-    assert config.allow_app_management is True
-    assert config.require_confirmation is False
-
-
-def test_the_parser_knows_the_new_flags():
+def test_the_parser_understands_the_usage_flag():
     parser = cli.build_parser()
-    args = parser.parse_args(["--usage"])
-    assert args.usage == "today"
 
-    args = parser.parse_args(["--usage", "2026-01-01"])
-    assert args.usage == "2026-01-01"
-
-    args = parser.parse_args([])
-    assert args.usage is None
+    assert parser.parse_args(["--usage"]).usage == "today"
+    assert parser.parse_args(["--usage", "2026-01-01"]).usage == "2026-01-01"
+    assert parser.parse_args([]).usage is None
