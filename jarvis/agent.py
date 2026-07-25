@@ -103,13 +103,13 @@ class Agent:
         provider: str | None = None,
         depth: int = 0,
         persist_memory: bool = True,
-    ) -> "Agent":
+    ) -> Agent:
         backend = build_backend(config, provider)
 
         def backend_factory(name: str | None = None) -> LLMBackend:
             return build_backend(config, name)
 
-        def agent_factory(name: str | None = None) -> "Agent":
+        def agent_factory(name: str | None = None) -> Agent:
             """Helper agent for the `delegate` tool: no history, no persistence."""
 
             return cls.from_config(
