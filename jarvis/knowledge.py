@@ -63,7 +63,7 @@ def cosine(a: Iterable[float], b: Iterable[float]) -> float:
     a_list, b_list = list(a), list(b)
     if len(a_list) != len(b_list) or not a_list:
         return 0.0
-    dot = sum(x * y for x, y in zip(a_list, b_list))
+    dot = sum(x * y for x, y in zip(a_list, b_list, strict=True))
     na = math.sqrt(sum(x * x for x in a_list))
     nb = math.sqrt(sum(y * y for y in b_list))
     if not na or not nb:
