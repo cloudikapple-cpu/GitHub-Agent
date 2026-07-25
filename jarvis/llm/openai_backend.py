@@ -56,7 +56,7 @@ class OpenAIBackend(LLMBackend):
 
     # ------------------------------------------------------------------
     @classmethod
-    def from_provider(cls, provider) -> "OpenAIBackend":
+    def from_provider(cls, provider) -> OpenAIBackend:
         """Build a backend from a :class:`jarvis.config.ProviderConfig`."""
 
         return cls(
