@@ -71,7 +71,8 @@ def _missing(modules: tuple[str, ...]) -> list[str]:
 def _port_open(url: str, timeout: float = 1.0) -> bool:
     """Return True when something accepts connections at ``url``."""
 
-    parsed = urlparse(url if "://" in url else f"http://{url}")
+    target = url if "://" in url else "http://" + url
+    parsed = urlparse(target)
     host = parsed.hostname or "localhost"
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
@@ -369,9 +370,7 @@ def check_permissions(config: Config) -> Check:
 # ----------------------------------------------------------------------
 # report
 # ----------------------------------------------------------------------
-def diagnose(
-    config: Config, config_path: str | None = None, probe: bool = True
-) -> list[Check]:
+def diagnose(config: Config, config_path: str | None = None, probe: bool = True) -> list[Check]:
     """Run every check and return the results in reading order."""
 
     checks = [check_python(), check_config(config_path), check_env()]
