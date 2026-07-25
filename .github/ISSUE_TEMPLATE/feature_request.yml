@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a capability, tool or integration
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do today and why it is awkward.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - New tool
+        - Model providers / router
+        - Memory and knowledge
+        - Reminders and scheduling
+        - Interfaces (CLI, window, tray, voice, Telegram)
+        - Security and permissions
+        - MCP or integrations
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: skill
+    attributes:
+      label: Could this be a skill instead?
+      options:
+        - label: I checked the skills documentation and this needs to live in core

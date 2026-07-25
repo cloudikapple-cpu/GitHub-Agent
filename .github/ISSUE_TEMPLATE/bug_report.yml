@@ -1,0 +1,58 @@
+name: Bug report
+description: Something does not work
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you asked Jarvis to do and what it did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.4"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Jarvis version
+      placeholder: "0.3.1"
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Model backend
+      options:
+        - OpenAI
+        - Anthropic
+        - Ollama (local)
+        - NVIDIA NIM
+        - Other OpenAI-compatible API
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output of `jarvis -v`
+      description: Remove API keys and anything private before pasting.
+      render: text
