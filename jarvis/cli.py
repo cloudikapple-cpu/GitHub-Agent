@@ -21,6 +21,36 @@ BANNER = """Jarvis — desktop AI assistant
 Type a request, 'reset' to clear the conversation, or 'exit' to quit.
 """
 
+#: Ready-made permission sets, so the user does not have to juggle five
+#: JARVIS_ALLOW_* switches. Explicit flags still win: the profile is applied
+#: before them.
+PROFILES: dict[str, dict[str, bool]] = {
+    # Reading and searching only: no shell, no code, no keyboard, no installs.
+    "safe": {
+        "require_confirmation": True,
+        "allow_shell": False,
+        "allow_exec": False,
+        "allow_desktop": False,
+        "allow_app_management": False,
+    },
+    # The everyday setting: full control, but it asks before risky actions.
+    "dev": {
+        "require_confirmation": True,
+        "allow_shell": True,
+        "allow_exec": True,
+        "allow_desktop": True,
+        "allow_app_management": False,
+    },
+    # No brakes. Everything allowed, nothing confirmed.
+    "yolo": {
+        "require_confirmation": False,
+        "allow_shell": True,
+        "allow_exec": True,
+        "allow_desktop": True,
+        "allow_app_management": True,
+    },
+}
+
 
 def _print(text: str, style: str | None = None) -> None:
     if _console is not None:
@@ -60,8 +90,20 @@ def _make_event_hook(verbose: bool):
     return hook
 
 
+def apply_profile(config: Config, name: str) -> Config:
+    """Apply a named permission profile to ``config``."""
+
+    for attribute, value in PROFILES[name].items():
+        setattr(config, attribute, value)
+    return config
+
+
 def apply_overrides(config: Config, args: argparse.Namespace) -> Config:
     """Apply command-line overrides to a loaded config."""
+
+    # The profile goes first so individual flags can still override it.
+    if getattr(args, "profile", None):
+        apply_profile(config, args.profile)
 
     if args.backend:
         config.backend = args.backend
@@ -79,14 +121,17 @@ def apply_overrides(config: Config, args: argparse.Namespace) -> Config:
     if args.no_confirm:
         config.require_confirmation = False
     if args.yolo:
-        config.require_confirmation = False
-        config.allow_app_management = True
+        apply_profile(config, "yolo")
     if args.dry_run:
         config.dry_run = True
     if args.voice:
         config.voice.enabled = True
     if args.sandbox:
         config.execution_sandbox.mode = args.sandbox
+    if getattr(args, "stream", False):
+        config.interface.stream = True
+    if getattr(args, "no_stream", False):
+        config.interface.stream = False
     return config
 
 
@@ -100,13 +145,32 @@ def build_agent(args: argparse.Namespace) -> tuple[Agent, Config]:
     return agent, config
 
 
-def run_once(agent: Agent, message: str) -> int:
-    reply = agent.run(message)
-    _print_markdown(reply)
+def respond(agent: Agent, config: Config, message: str) -> str:
+    """Answer one message, streaming the reply when the config asks for it."""
+
+    if not getattr(config.interface, "stream", False):
+        reply = agent.run(message)
+        _print_markdown(reply)
+        return reply
+
+    chunks: list[str] = []
+    for chunk in agent.stream(message):
+        chunks.append(chunk)
+        print(chunk, end="", flush=True)
+    print()
+    return "".join(chunks)
+
+
+def run_once(agent: Agent, message: str, config: Config | None = None) -> int:
+    if config is None:
+        reply = agent.run(message)
+        _print_markdown(reply)
+    else:
+        respond(agent, config, message)
     return 0
 
 
-def run_repl(agent: Agent, voice=None) -> int:
+def run_repl(agent: Agent, voice=None, config: Config | None = None) -> int:
     _print(BANNER, style="bold")
     while True:
         try:
@@ -132,14 +196,20 @@ def run_repl(agent: Agent, voice=None) -> int:
         if user_input.lower() in {"tools", ":tools"}:
             _print(agent.tools.describe())
             continue
+        if user_input.lower() in {"undo", ":undo"}:
+            _print(agent.tools.execute("undo_last", {}))
+            continue
 
         try:
-            reply = agent.run(user_input)
+            if config is None:
+                reply = agent.run(user_input)
+                _print_markdown(reply)
+            else:
+                reply = respond(agent, config, user_input)
         except KeyboardInterrupt:
             agent.cancel()
             _print("Interrupted.", style="dim")
             continue
-        _print_markdown(reply)
         if voice is not None and voice.config.speak_replies:
             voice.speak(reply)
     return 0
@@ -159,6 +229,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-base", help="Override the API base URL (any OpenAI-compatible API).")
     parser.add_argument("--api-key", help="Override the API key for this run.")
     parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILES),
+        help="Permission preset: safe (read-only), dev (full control, confirms), yolo (no brakes).",
+    )
+    parser.add_argument(
         "--router",
         action="store_true",
         help="Enable provider routing (local model first, cloud fallback).",
@@ -169,7 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--yolo",
         action="store_true",
-        help="No confirmations and app management enabled. Use at your own risk.",
+        help="Shorthand for --profile yolo. Use at your own risk.",
     )
     parser.add_argument(
         "--dry-run",
@@ -180,6 +255,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--sandbox",
         choices=["none", "docker", "firejail"],
         help="Run shell commands and code inside an isolated sandbox.",
+    )
+    parser.add_argument(
+        "--stream", action="store_true", help="Print the reply as it is generated."
+    )
+    parser.add_argument(
+        "--no-stream", action="store_true", help="Wait for the full reply before printing."
     )
     parser.add_argument("--voice", action="store_true", help="Use the microphone for input.")
     parser.add_argument("--gui", action="store_true", help="Open the desktop window.")
@@ -267,8 +348,8 @@ def main(argv: list[str] | None = None) -> int:
         voice = VoiceIO(config.voice)
 
     if args.message:
-        return run_once(agent, args.message)
-    return run_repl(agent, voice=voice)
+        return run_once(agent, args.message, config)
+    return run_repl(agent, voice=voice, config=config)
 
 
 if __name__ == "__main__":  # pragma: no cover
