@@ -9,6 +9,10 @@ Trimming never leaves an orphaned ``tool`` result at the start of the window,
 which would make most providers reject the request. What falls out of the
 window is not lost silently: a compact note about the dropped turns is kept
 next to the system prompt, so the model still knows the session had a past.
+
+That note is context too, so it is capped at a quarter of ``max_chars`` and
+counted against the budget. Otherwise a long session would keep the window
+nominally small while the summary grew past the limit on its own.
 """
 
 from __future__ import annotations
@@ -23,6 +27,10 @@ from .llm.base import ToolCall
 QUOTE_CHARS = 160
 #: How many distinct tool names the summary lists.
 MAX_SUMMARISED_TOOLS = 8
+#: The summary never takes more than this share of ``max_chars``...
+SUMMARY_BUDGET_RATIO = 4
+#: ...nor shrinks below this, so it stays readable with a tiny budget.
+MIN_SUMMARY_CHARS = 80
 
 
 def _encode(message: dict[str, Any]) -> dict[str, Any]:
@@ -89,6 +97,13 @@ class ConversationMemory:
             head.append({"role": "system", "content": summary})
         return [*head, *self._messages]
 
+    def summary_budget(self) -> int:
+        """How many characters the trim note may take. ``0`` means unlimited."""
+
+        if not self.max_chars:
+            return 0
+        return max(MIN_SUMMARY_CHARS, self.max_chars // SUMMARY_BUDGET_RATIO)
+
     def summary(self) -> str:
         """One-paragraph description of everything trimmed so far."""
 
@@ -103,7 +118,13 @@ class ConversationMemory:
         if self._dropped_tools:
             parts.append("Tools already used: " + ", ".join(self._dropped_tools) + ".")
         parts.append("Ask the user again if you need any of those details.")
-        return " ".join(parts)
+
+        text = " ".join(parts)
+        budget = self.summary_budget()
+        if budget and len(text) > budget:
+            text = text[: budget - 1].rstrip() + "..."
+            text = text[:budget]
+        return text
 
     def reset(self) -> None:
         self._messages.clear()
@@ -115,6 +136,11 @@ class ConversationMemory:
     # ------------------------------------------------------------------
     def _size(self) -> int:
         return sum(len(str(m.get("content") or "")) for m in self._messages)
+
+    def _budget_used(self) -> int:
+        """Characters the model will actually receive, summary included."""
+
+        return self._size() + len(self.summary())
 
     def _absorb(self, dropped: list[dict[str, Any]]) -> None:
         """Fold the messages leaving the window into the running summary."""
@@ -142,7 +168,7 @@ class ConversationMemory:
     def _trim(self) -> None:
         if len(self._messages) > self.max_messages:
             self._drop_from_front(len(self._messages) - self.max_messages)
-        while self.max_chars and self._size() > self.max_chars and len(self._messages) > 2:
+        while self.max_chars and self._budget_used() > self.max_chars and len(self._messages) > 2:
             self._drop_from_front(1)
 
     # ------------------------------------------------------------------
